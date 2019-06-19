@@ -42,8 +42,7 @@ end.
 case VerList of
     [20 | _] = V20 when V20 < [20, 3, 8, 11] -> NotSupported(VerString);
     [20 | _] = V20 when V20 >= [20, 3, 8, 11] -> ok;
-    [21, 2] -> NotSupported(VerString);
-    [21, 2, N | _] when N < 3 -> NotSupported(VerString);
+    [21 | _] = V21 when V21 < [21, 2, 3] -> NotSupported(VerString);
     _ -> ok
 end.
 
