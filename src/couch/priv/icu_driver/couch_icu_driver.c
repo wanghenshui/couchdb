@@ -30,6 +30,8 @@ specific language governing permissions and limitations under the License.
 #include <string.h> /* for memcpy */
 #endif
 
+#define BUFFER_SIZE 1000
+
 
 typedef struct {
     ErlDrvPort port;
@@ -147,6 +149,61 @@ couch_drv_control(ErlDrvData drv_data, unsigned int command,
 
         return return_control_result(&response, sizeof(response), rbuf, rlen);
         }
+    case 2: /* GET_SORT_KEY: */
+        {
+
+        UChar source[BUFFER_SIZE];
+        UChar* sourcePtr = source;
+        int32_t sourceLen = BUFFER_SIZE;
+
+        uint8_t sortKey[BUFFER_SIZE];
+        uint8_t* sortKeyPtr = sortKey;
+        int32_t sortKeyLen = BUFFER_SIZE;
+
+        int32_t inputLen;
+
+        UErrorCode status = U_ZERO_ERROR;
+        ErlDrvSSizeT res;
+
+        /* first 32bits are the length */
+        memcpy(&inputLen, pBuf, sizeof(inputLen));
+        pBuf += sizeof(inputLen);
+
+        u_strFromUTF8(sourcePtr, BUFFER_SIZE, &sourceLen, pBuf, inputLen, &status);
+
+        if (sourceLen >= BUFFER_SIZE) {
+            /* reset status or next u_strFromUTF8 call will auto-fail */
+            status = U_ZERO_ERROR;
+            sourcePtr = (UChar*) malloc(sourceLen * sizeof(UChar));
+            u_strFromUTF8(sourcePtr, sourceLen, NULL, pBuf, inputLen, &status);
+            if (U_FAILURE(status)) {
+                rbuf = NULL;
+                return 0;
+            }
+        } else if (U_FAILURE(status)) {
+            rbuf = NULL;
+            return 0;
+        }
+
+        sortKeyLen = ucol_getSortKey(pData->coll, sourcePtr, sourceLen, sortKeyPtr, BUFFER_SIZE);
+
+        if (sortKeyLen > BUFFER_SIZE) {
+            sortKeyPtr = (uint8_t*) malloc(sortKeyLen);
+            ucol_getSortKey(pData->coll, sourcePtr, sourceLen, sortKeyPtr, sortKeyLen);
+        }
+
+        res = return_control_result(sortKeyPtr, sortKeyLen, rbuf, rlen);
+
+        if (sourcePtr != source) {
+            free(sourcePtr);
+        }
+
+        if (sortKeyPtr != sortKey) {
+            free(sortKeyPtr);
+        }
+
+        return res;
+    }
 
     default:
         return -1;
