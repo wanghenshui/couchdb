@@ -406,7 +406,7 @@ collate(A, B, Options) when is_binary(A), is_binary(B) ->
     SizeA = byte_size(A),
     SizeB = byte_size(B),
     Bin = <<SizeA:32/native, A/binary, SizeB:32/native, B/binary>>,
-    [Result] = erlang:port_control(drv_port(), Operation, Bin),
+    <<Result>> = erlang:port_control(drv_port(), Operation, Bin),
     % Result is 0 for lt, 1 for eq and 2 for gt. Subtract 1 to return the
     % expected typical -1, 0, 1
     Result - 1.

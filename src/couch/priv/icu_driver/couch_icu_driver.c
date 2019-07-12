@@ -56,6 +56,8 @@ static ErlDrvData couch_drv_start(ErlDrvPort port, char *buff)
     UErrorCode status = U_ZERO_ERROR;
     couch_drv_data* pData = (couch_drv_data*)driver_alloc(sizeof(couch_drv_data));
 
+	set_port_control_flags(port, PORT_CONTROL_FLAG_BINARY);
+
     if (pData == NULL)
         return ERL_DRV_ERROR_GENERAL;
 
@@ -86,14 +88,17 @@ ErlDrvSSizeT
 return_control_result(void* pLocalResult, int localLen,
             char **ppRetBuf, ErlDrvSizeT returnLen)
 {
+	ErlDrvBinary* buf = NULL;
+
     if (*ppRetBuf == NULL || localLen > returnLen) {
-        *ppRetBuf = (char*)driver_alloc_binary(localLen);
-        if(*ppRetBuf == NULL) {
-            return -1;
-        }
-    }
-    memcpy(*ppRetBuf, pLocalResult, localLen);
-    return localLen;
+		buf = driver_alloc_binary(localLen);
+		memcpy(buf->orig_bytes, pLocalResult, localLen);
+		*ppRetBuf = (char*) buf;
+		return localLen;
+    } else {
+		memcpy(*ppRetBuf, pLocalResult, localLen);
+		return localLen;
+	}
 }
 
 static ErlDrvSSizeT
