@@ -11,6 +11,10 @@
 % the License.
 
 -define(REP_ID_VERSION, 4).
+-define(REP_DOCS, <<"repdocs">>).
+-define(REP_JOBS, <<"repjobs">>).
+-define(REP_DOCS_TIMEOUT_MSEC, 17000).
+-define(REP_JOBS_TIMEOUT_MSEC, 33000).
 
 -record(rep, {
     id :: rep_id() | '_' | 'undefined',
@@ -22,7 +26,7 @@
     view = nil :: any() | '_',
     doc_id :: any() | '_',
     db_name = null :: null | binary() | '_',
-    start_time = {0, 0, 0} :: erlang:timestamp() | '_',
+    start_time = 0 :: integer() | '_',
     stats = couch_replicator_stats:new() :: orddict:orddict() | '_'
 }).
 

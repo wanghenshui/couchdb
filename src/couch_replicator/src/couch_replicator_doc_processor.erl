@@ -13,7 +13,6 @@
 -module(couch_replicator_doc_processor).
 
 -behaviour(gen_server).
--behaviour(couch_multidb_changes).
 
 -export([
     start_link/0
@@ -29,10 +28,9 @@
 ]).
 
 -export([
-    db_created/2,
-    db_deleted/2,
-    db_found/2,
-    db_change/3
+    during_doc_update/3,
+    after_db_create/1,
+    after_db_delete/1
 ]).
 
 -export([
@@ -76,88 +74,118 @@
 }).
 
 
-% couch_multidb_changes API callbacks
-
-db_created(DbName, Server) ->
-    couch_stats:increment_counter([couch_replicator, docs, dbs_created]),
-    couch_replicator_docs:ensure_rep_ddoc_exists(DbName),
-    Server.
-
-
-db_deleted(DbName, Server) ->
-    couch_stats:increment_counter([couch_replicator, docs, dbs_deleted]),
-    ok = gen_server:call(?MODULE, {clean_up_replications, DbName}, infinity),
-    Server.
-
-
-db_found(DbName, Server) ->
-    couch_stats:increment_counter([couch_replicator, docs, dbs_found]),
-    couch_replicator_docs:ensure_rep_ddoc_exists(DbName),
-    Server.
-
-
-db_change(DbName, {ChangeProps} = Change, Server) ->
+during_doc_update(#doc{} = Doc, Db, _UpdateType) ->
     couch_stats:increment_counter([couch_replicator, docs, db_changes]),
     try
-        ok = process_change(DbName, Change)
+        process_change(Db, Doc)
     catch
-    _Tag:Error ->
-        {RepProps} = get_json_value(doc, ChangeProps),
-        DocId = get_json_value(<<"_id">>, RepProps),
-        couch_replicator_docs:update_failed(DbName, DocId, Error)
+        _Tag:Error ->
+            DocId = Doc#doc.id,
+            #{name := DbName} = Db,
+            couch_replicator_docs:update_failed(DbName, DocId, Error)
     end,
-    Server.
+    ok.
 
 
--spec get_worker_ref(db_doc_id()) -> reference() | nil.
-get_worker_ref({DbName, DocId}) when is_binary(DbName), is_binary(DocId) ->
-    case ets:lookup(?MODULE, {DbName, DocId}) of
-        [#rdoc{worker = WRef}] when is_reference(WRef) ->
-            WRef;
-        [#rdoc{worker = nil}] ->
-            nil;
-        [] ->
-            nil
+after_db_create(#{name := DbName}) ->
+    couch_stats:increment_counter([couch_replicator, docs, dbs_created]),
+    couch_replicator_docs:ensure_rep_ddoc_exists(DbName).
+
+
+after_db_delete(#{name := DbName}) ->
+    couch_stats:increment_counter([couch_replicator, docs, dbs_deleted]),
+    gen_server:call(?MODULE, {clean_up_replications, DbName}, infinity).
+
+
+docs_job_id(DbName, Id) when is_binary(DbName), is_binary(Id) ->
+    <<DbName/binary, Id/binary>>.
+
+
+process_change(_Db, #doc{id = <<?DESIGN_DOC_PREFIX, _/binary>>}) ->
+    ok;
+
+process_change(#{name := DbName} = Db, #doc{deleted = true} = Doc) ->
+    Id = docs_job_id(DbName, Doc#doc.id),
+    case couch_jobs:get_job_data(Db, ?REP_DOCS, Id) of
+        {error, not_found} ->
+            ok;
+        {ok, #{<<"rid">> := null}} ->
+            couch_jobs:remove(Db, ?REP_DOCS, Id),
+            ok;
+        {ok, #{<<"rid">> := RepId}} ->
+            couch_jobs:remove(Db, ?REP_JOBS, RepId),
+            couch_jobs:remove(Db, ?REP_DOCS, Id),
+            ok
     end.
 
 
-% Cluster membership change notification callback
--spec notify_cluster_event(pid(), {cluster, any()}) -> ok.
-notify_cluster_event(Server, {cluster, _} = Event) ->
-    gen_server:cast(Server, Event).
+process_change(#{name := DbName} = Db, #doc{} = Doc) ->
+    #doc{id = DocId, body = {Props} = Body} = Doc,
+    Id = docs_job_id(DbName, DocId),
+    DocState = get_json_value(<<"_replication_state">>, Props),
+    {Rep, RepParseError} = try
+        Rep0 = couch_replicator_docs:parse_rep_doc_without_id(Body),
+        Rep1 = Rep0#{db_name = DbName, start_time = erlang:system_time()},
+        {Rep1, null}
+    catch
+        throw:{bad_rep_doc, Reason} ->
+            {null, Reason}
+    end,
+    RepMap = couch_replicator_docs:rep_to_map(Rep),
+    case couch_jobs:get_job_data(Db, ?REP_DOCS, Id) of
+        {error, not_found} ->
+            RepDocsJob = #{
+                <<"rep_id">> := null,
+                <<"db_name">> := DbName,
+                <<"doc_id">> := Doc#doc.id,
+                <<"rep">> := RepMap,
+                <<"rep_parse_error">> := RepParseError
+            },
+            couch_jobs:add(Db, ?REP_DOCS, RepDocsJob);
+        {ok, #{} = Old} ->
+            % Normalize old rep and new rep and only update job
+            % if changed
+            #{<<"rep">> := OldRep, <<"rep_parse_error">> := OldError} = Old,
+            NOldRep = couch_replicator_util:normalize_rep(OldRep),
+            NRep = couch_replicator_util:normalize_rep(Rep),
+            RepDocsJob = #{
+                <<"rep_id">> := null,
+                <<"db_name">> := DbName,
+                <<"doc_id">> := Doc#doc.id,
+                <<"rep">> := RepMap,
+                <<"rep_parse_error">> := RepParseError
+            }
+    end.
 
 
-process_change(DbName, {Change}) ->
-    {RepProps} = JsonRepDoc = get_json_value(doc, Change),
-    DocId = get_json_value(<<"_id">>, RepProps),
-    Owner = couch_replicator_clustering:owner(DbName, DocId),
+process_change(#{name := DbName} = Db, #doc{} = Doc) ->
+    #doc{id = DocId, body = {Props} = Body, deleted = Deleted} = Doc,
     Id = {DbName, DocId},
-    case {Owner, get_json_value(deleted, Change, false)} of
-    {_, true} ->
-        ok = gen_server:call(?MODULE, {removed, Id}, infinity);
-    {unstable, false} ->
-        couch_log:notice("Not starting '~s' as cluster is unstable", [DocId]);
-    {ThisNode, false} when ThisNode =:= node() ->
-        case get_json_value(<<"_replication_state">>, RepProps) of
-        undefined ->
-            ok = process_updated(Id, JsonRepDoc);
-        <<"triggered">> ->
+    case Deleted of
+        true ->
+            process_deleted_doc(Db, Id);
+        false ->
+            process_updated_doc(Db, Id, Body)
+    end.
+    State = get_json_value(<<"_replication_state">>, Props),
+    case {Deleted, State} of
+        {true, _} ->
+            ok = gen_server:call(?MODULE, {removed, Id}, infinity);
+        {false, undefined} ->
+            ok = process_updated(Id, Body);
+        {false, <<"triggered">>} ->
             maybe_remove_state_fields(DbName, DocId),
-            ok = process_updated(Id, JsonRepDoc);
-        <<"completed">> ->
+            ok = process_updated(Id, Body);
+        {false, <<"completed">>} ->
             ok = gen_server:call(?MODULE, {completed, Id}, infinity);
-        <<"error">> ->
+        {false, <<"error">>} ->
             % Handle replications started from older versions of replicator
             % which wrote transient errors to replication docs
             maybe_remove_state_fields(DbName, DocId),
-            ok = process_updated(Id, JsonRepDoc);
-        <<"failed">> ->
+            ok = process_updated(Id, Body);
+        {false, <<"failed">>} ->
             ok
-        end;
-    {Owner, false} ->
-        ok
-    end,
-    ok.
+    end.
 
 
 maybe_remove_state_fields(DbName, DocId) ->

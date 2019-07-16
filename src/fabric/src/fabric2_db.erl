@@ -29,6 +29,9 @@
     name/1,
     get_after_doc_read_fun/1,
     get_before_doc_update_fun/1,
+    get_during_doc_update_fun/1,
+    get_after_db_create_fun/1,
+    get_after_db_delete_fun/1,
     get_committed_update_seq/1,
     get_compacted_seq/1,
     get_compactor_pid/1,
@@ -153,7 +156,9 @@ create(DbName, Options) ->
         #{} = Db0 ->
             Db1 = maybe_add_sys_db_callbacks(Db0),
             ok = fabric2_server:store(Db1),
-            {ok, Db1#{tx := undefined}};
+            Db2 = Db1#{tx := undefined},
+            ok = apply_after_db_create(Db2),
+            {ok, Db2};
         Error ->
             Error
     end.
@@ -186,6 +191,7 @@ delete(DbName, Options) ->
         fabric2_fdb:delete(TxDb)
     end),
     if Resp /= ok -> Resp; true ->
+        ok = apply_after_db_delete(Db#{tx := undefined}),
         fabric2_server:remove(DbName)
     end.
 
@@ -261,6 +267,19 @@ get_after_doc_read_fun(#{after_doc_read := AfterDocRead}) ->
 
 get_before_doc_update_fun(#{before_doc_update := BeforeDocUpdate}) ->
     BeforeDocUpdate.
+
+
+get_during_doc_update_fun(#{during_doc_update := DuringDocUpdate}) ->
+    DuringDocUpdate.
+
+
+get_after_db_create_fun(#{after_db_create := AfterDbCreate}) ->
+    AfterDbCreate.
+
+
+get_after_db_delete_fun(#{after_db_delete := AfterDbDelete}) ->
+    AfterDbDelete.
+
 
 get_committed_update_seq(#{} = Db) ->
     get_update_seq(Db).
@@ -745,24 +764,33 @@ maybe_add_sys_db_callbacks(Db) ->
     IsGlobalUsersDb = fabric2_util:dbname_ends_with(Db, <<"_users">>),
     IsUsersDb = IsAuthCache orelse IsCfgUsersDb orelse IsGlobalUsersDb,
 
-    {BDU, ADR} = if
+    {BDU, DDU, ADR, ADC, ADD} = if
         IsReplicatorDb ->
             {
                 fun couch_replicator_docs:before_doc_update/3,
-                fun couch_replicator_docs:after_doc_read/2
+                fun couch_replicator_doc_processor:during_doc_update/3,
+                fun couch_replicator_docs:after_doc_read/2,
+                fun couch_replicator_doc_processor:after_db_create/1,
+                fun couch_replicator_doc_processor:after_db_delete/1
             };
         IsUsersDb ->
             {
                 fun fabric2_users_db:before_doc_update/3,
-                fun fabric2_users_db:after_doc_read/2
+                undefined,
+                fun fabric2_users_db:after_doc_read/2,
+                undefined,
+                undefined
             };
         true ->
-            {undefined, undefined}
+            {undefined, undefined, undefined, undefined, undefined}
     end,
 
     Db#{
         before_doc_update := BDU,
-        after_doc_read := ADR
+        during_doc_update := DDU,
+        after_doc_read := ADR,
+        after_db_create := ADC,
+        after_db_delete := ADD
     }.
 
 
@@ -996,6 +1024,33 @@ apply_before_doc_update(Db, Docs, Options) ->
     end.
 
 
+apply_during_doc_update(#{during_doc_update := DDU} = Db, Doc, UpdateType)
+        when is_function(DDU, 3) ->
+    DDU(Doc, Db, UpdateType),
+    ok;
+
+apply_during_doc_update(#{during_doc_update := undefined}, _, _) ->
+    ok.
+
+
+apply_after_db_create(#{after_db_create := ADC} = Db)
+        when is_function(ADC, 1) ->
+    ADC(Db),
+    ok;
+
+apply_after_db_create(#{after_db_create := undefined}) ->
+    ok.
+
+
+apply_after_db_delete(#{after_db_delete := ADD} = Db)
+        when is_function(ADD, 1) ->
+    ADD(Db),
+    ok;
+
+apply_after_db_delete(#{after_db_delete := undefined}) ->
+    ok.
+
+
 update_doc_int(#{} = Db, #doc{} = Doc, Options) ->
     IsLocal = case Doc#doc.id of
         <<?LOCAL_DOC_PREFIX, _/binary>> -> true;
@@ -1172,6 +1227,8 @@ update_doc_interactive(Db, Doc0, Future, _Options) ->
             ToRemove
         ),
 
+    ok = apply_during_doc_update(Db, Doc3, interactive_edit),
+
     {ok, {NewRevPos, NewRev}}.
 
 
@@ -1254,6 +1311,8 @@ update_doc_replicated(Db, Doc0, _Options) ->
             ToUpdate,
             ToRemove
         ),
+
+    ok = apply_during_doc_update(Db, Doc3, replicated_changes),
 
     {ok, []}.
 

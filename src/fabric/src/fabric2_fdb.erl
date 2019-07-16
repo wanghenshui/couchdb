@@ -162,7 +162,10 @@ create(#{} = Db0, Options) ->
 
         validate_doc_update_funs => [],
         before_doc_update => undefined,
+        during_doc_update => undefined,
         after_doc_read => undefined,
+        after_db_create => undefined,
+        after_db_delete => undefined,
         % All other db things as we add features,
 
         db_options => Options
@@ -199,8 +202,10 @@ open(#{} = Db0, Options) ->
         % bits.
         validate_doc_update_funs => [],
         before_doc_update => undefined,
+        during_doc_update => undefined,
         after_doc_read => undefined,
-
+        after_db_create => undefined,
+        after_db_delete => undefined,
         db_options => Options
     },
 

@@ -18,11 +18,11 @@
     parse_rep_db/3,
     parse_rep_doc_without_id/1,
     parse_rep_doc_without_id/2,
+    rep_to_map/1,
     before_doc_update/3,
     after_doc_read/2,
     ensure_rep_db_exists/0,
     ensure_rep_ddoc_exists/1,
-    ensure_cluster_rep_ddoc_exists/1,
     remove_state_fields/2,
     update_doc_completed/3,
     update_failed/3,
@@ -121,34 +121,22 @@ update_error(#rep{db_name = DbName, doc_id = DocId, id = RepId}, Error) ->
     ok.
 
 
--spec ensure_rep_db_exists() -> {ok, Db::any()}.
+-spec ensure_rep_db_exists() -> ok.
 ensure_rep_db_exists() ->
-    Db = case couch_db:open_int(?REP_DB_NAME, [?CTX, sys_db,
-            nologifmissing]) of
-        {ok, Db0} ->
-            Db0;
-        _Error ->
-            {ok, Db0} = couch_db:create(?REP_DB_NAME, [?CTX, sys_db]),
-            Db0
-    end,
-    ok = ensure_rep_ddoc_exists(?REP_DB_NAME),
-    {ok, Db}.
-
-
--spec ensure_rep_ddoc_exists(binary()) -> ok.
-ensure_rep_ddoc_exists(RepDb) ->
-    case mem3:belongs(RepDb, ?REP_DESIGN_DOC) of
-        true ->
-            ensure_rep_ddoc_exists(RepDb, ?REP_DESIGN_DOC);
-        false ->
+    Opts = [?CTX, sys_db, nologifmissing],
+    case fabric2_db:create(?REP_DB_NAME, Opts) of
+        {error, file_exists} ->
+            ok;
+        {ok, _Db} ->
             ok
     end.
 
 
--spec ensure_rep_ddoc_exists(binary(), binary()) -> ok.
-ensure_rep_ddoc_exists(RepDb, DDocId) ->
+-spec ensure_rep_ddoc_exists(binary()) -> ok.
+ensure_rep_ddoc_exists(RepDb) ->
+    DDocId = ?REP_DESIGN_DOC,
     case open_rep_doc(RepDb, DDocId) of
-        {not_found, no_db_file} ->
+        {not_found, database_does_not_exist} ->
             %% database was deleted.
             ok;
         {not_found, _Reason} ->
@@ -177,13 +165,6 @@ ensure_rep_ddoc_exists(RepDb, DDocId) ->
             end
     end,
     ok.
-
-
--spec ensure_cluster_rep_ddoc_exists(binary()) -> ok.
-ensure_cluster_rep_ddoc_exists(RepDb) ->
-    DDocId = ?REP_DESIGN_DOC,
-    [#shard{name = DbShard} | _] = mem3:shards(RepDb, DDocId),
-    ensure_rep_ddoc_exists(DbShard, DDocId).
 
 
 -spec compare_ejson({[_]}, {[_]}) -> boolean().
@@ -291,6 +272,26 @@ parse_rep_doc_without_id({Props}, UserCtx) ->
     end.
 
 
+rep_to_map(null) ->
+    null;
+
+rep_to_map(#rep{} = Rep) ->
+    {IdBase, IdExt} = Rep#rep.id,
+    #{
+        <<"id_base">> => IdBase,
+        <<"id_ext">> => IdExt,
+        <<"source">> => Rep#rep.source,
+        <<"target">> => Rep#rep.target,
+        <<"options">> => Rep#rep.options,
+        <<"user_ctx">> => Rep#rep.user_ctx,
+        <<"type">> => Rep#rep.type,
+        <<"view">> => Rep#rep.view,
+        <<"doc_id">> => Rep#rep.doc_id,
+        <<"db_name">> => Rep#rep.db_name,
+        <<"start_time">> = Rep#rep.start_time,
+        <<"stats">> = Rep#rep.stats
+    }.
+
 % Update a #rep{} record with a replication_id. Calculating the id might involve
 % fetching a filter from the source db, and so it could fail intermetently.
 % In case of a failure to fetch the filter this function will throw a
@@ -350,22 +351,21 @@ update_rep_doc(RepDbName, #doc{body = {RepDocBody}} = RepDoc, KVs, _Try) ->
 
 
 open_rep_doc(DbName, DocId) ->
-    case couch_db:open_int(DbName, [?CTX, sys_db]) of
-        {ok, Db} ->
-            try
-                couch_db:open_doc(Db, DocId, [ejson_body])
-            after
-                couch_db:close(Db)
-            end;
-        Else ->
-            Else
+    try
+        case fabric2_db:open(DbName, [?CTX, sys_db]) of
+            {ok, Db} -> fabric2_db:open_doc(Db, DocId, [ejson_body]);
+            Else -> Else
+        end
+    catch
+        error:database_does_not_exist ->
+            {not_found, database_does_not_exist}
     end.
 
 
 save_rep_doc(DbName, Doc) ->
-    {ok, Db} = couch_db:open_int(DbName, [?CTX, sys_db]),
+    {ok, Db} = fabric2_db:open(DbName, [?CTX, sys_db]),
     try
-        couch_db:update_doc(Db, Doc, [])
+        fabric2_db:update_doc(Db, Doc, [])
     catch
         % User can accidently write a VDU which prevents _replicator from
         % updating replication documents. Avoid crashing replicator and thus
@@ -374,8 +374,6 @@ save_rep_doc(DbName, Doc) ->
             Msg = "~p VDU function preventing doc update to ~s ~s ~p",
             couch_log:error(Msg, [?MODULE, DbName, Doc#doc.id, Reason]),
             {ok, forbidden}
-    after
-        couch_db:close(Db)
     end.
 
 
@@ -622,7 +620,7 @@ before_doc_update(#doc{body = {Body}} = Doc, Db, _UpdateType) ->
     #user_ctx{
        roles = Roles,
        name = Name
-    } = couch_db:get_user_ctx(Db),
+    } = fabric2_db:get_user_ctx(Db),
     case lists:member(<<"_replicator">>, Roles) of
     true ->
         Doc;
@@ -633,7 +631,7 @@ before_doc_update(#doc{body = {Body}} = Doc, Db, _UpdateType) ->
         Name ->
             Doc;
         Other ->
-            case (catch couch_db:check_is_admin(Db)) of
+            case (catch fabric2_db:check_is_admin(Db)) of
             ok when Other =:= null ->
                 Doc#doc{body = {?replace(Body, ?OWNER, Name)}};
             ok ->
@@ -650,8 +648,8 @@ before_doc_update(#doc{body = {Body}} = Doc, Db, _UpdateType) ->
 after_doc_read(#doc{id = <<?DESIGN_DOC_PREFIX, _/binary>>} = Doc, _Db) ->
     Doc;
 after_doc_read(#doc{body = {Body}} = Doc, Db) ->
-    #user_ctx{name = Name} = couch_db:get_user_ctx(Db),
-    case (catch couch_db:check_is_admin(Db)) of
+    #user_ctx{name = Name} = fabric2_db:get_user_ctx(Db),
+    case (catch fabric2_db:check_is_admin(Db)) of
     ok ->
         Doc;
     _ ->
@@ -659,16 +657,15 @@ after_doc_read(#doc{body = {Body}} = Doc, Db) ->
         Name ->
             Doc;
         _Other ->
-            Source = strip_credentials(couch_util:get_value(<<"source">>,
-Body)),
-            Target = strip_credentials(couch_util:get_value(<<"target">>,
-Body)),
+            Source0 = couch_util:get_value(<<"source">>, Body),
+            Target0 = couch_util:get_value(<<"target">>, Body),
+            Source = strip_credentials(Source0),
+            Target = strip_credentials(Target0),
             NewBody0 = ?replace(Body, <<"source">>, Source),
             NewBody = ?replace(NewBody0, <<"target">>, Target),
             #doc{revs = {Pos, [_ | Revs]}} = Doc,
             NewDoc = Doc#doc{body = {NewBody}, revs = {Pos - 1, Revs}},
-            NewRevId = couch_db:new_revid(NewDoc),
-            NewDoc#doc{revs = {Pos, [NewRevId | Revs]}}
+            fabric2_db:new_revid(NewDoc)
         end
     end.
 
@@ -779,27 +776,24 @@ check_strip_credentials_test() ->
 
 setup() ->
     DbName = ?tempdb(),
-    {ok, Db} = couch_db:create(DbName, [?ADMIN_CTX]),
-    ok = couch_db:close(Db),
-    create_vdu(DbName),
+    {ok, Db} = fabric2_db:create(DbName, [?ADMIN_CTX]),
+    create_vdu(Db),
     DbName.
 
 
 teardown(DbName) when is_binary(DbName) ->
-    couch_server:delete(DbName, [?ADMIN_CTX]),
+    fabric2_db:delete(DbName, [?ADMIN_CTX]),
     ok.
 
 
-create_vdu(DbName) ->
-    couch_util:with_db(DbName, fun(Db) ->
-        VduFun = <<"function(newdoc, olddoc, userctx) {throw({'forbidden':'fail'})}">>,
-        Doc = #doc{
-            id = <<"_design/vdu">>,
-            body = {[{<<"validate_doc_update">>, VduFun}]}
-        },
-        {ok, _} = couch_db:update_docs(Db, [Doc]),
-        couch_db:ensure_full_commit(Db)
-    end).
+create_vdu(Db) ->
+    VduFun = <<"function(newdoc, olddoc, userctx) {throw({'forbidden':'fail'})}">>,
+    Doc = #doc{
+        id = <<"_design/vdu">>,
+        body = {[{<<"validate_doc_update">>, VduFun}]}
+    },
+    {ok, _} = fabric2_db:update_doc(Db, [Doc]),
+    ok.
 
 
 update_replicator_doc_with_bad_vdu_test_() ->

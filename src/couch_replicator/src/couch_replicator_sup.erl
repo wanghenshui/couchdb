@@ -70,12 +70,6 @@ init(_Args) ->
             transient,
             brutal_kill,
             worker,
-            [couch_replicator]},
-        {couch_replicator_db_changes,
-            {couch_replicator_db_changes, start_link, []},
-            permanent,
-            brutal_kill,
-            worker,
-            [couch_multidb_changes]}
+            [couch_replicator]}
     ],
     {ok, {{rest_for_one,10,1}, Children}}.
