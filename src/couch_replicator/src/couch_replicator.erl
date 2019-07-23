@@ -52,30 +52,27 @@
     {ok, {cancelled, binary()}} |
     {error, any()} |
     no_return().
-replicate(PostBody, Ctx) ->
-    {ok, Rep0} = couch_replicator_utils:parse_rep_doc(PostBody, Ctx),
-    Rep = Rep0#rep{start_time = os:timestamp()},
-    #rep{id = RepId, options = Options, user_ctx = UserCtx} = Rep,
-    case get_value(cancel, Options, false) of
-    true ->
-        CancelRepId = case get_value(id, Options, nil) of
-        nil ->
-            RepId;
-        RepId2 ->
-            RepId2
-        end,
-        case check_authorization(CancelRepId, UserCtx) of
-        ok ->
-            cancel_replication(CancelRepId);
-        not_found ->
-            {error, not_found}
-        end;
-    false ->
-        check_authorization(RepId, UserCtx),
-        {ok, Listener} = rep_result_listener(RepId),
-        Result = do_replication_loop(Rep),
-        couch_replicator_notifier:stop(Listener),
-        Result
+replicate(PostBody, UserCtx) ->
+    {ok, Rep0} = couch_replicator_utils:parse_rep_doc(PostBody, UserCtx),
+    Rep = Rep0#{<<"start_time">> => erlang:system_time()},
+    #{<<"id">> := RepId, <<"options">> := Options} = Rep,
+    case maps:get(<<"cancel">>, Options, false) of
+        true ->
+            CancelRepId = case maps:get(<<"id">>, Options, nil) of
+                nil -> RepId;
+                RepId2 -> RepId2
+            end,
+            case check_authorization(CancelRepId, UserCtx) of
+                ok -> cancel_replication(CancelRepId);
+                not_found -> {error, not_found}
+            end;
+        false ->
+            check_authorization(RepId, UserCtx),
+            ok = couch_replicator_scheduler:add_job(Rep),
+            case maps:get(<<"continuous">>, Options, false) of
+                true -> {ok, {continuous, Id}};
+                false -> wait_for_result(Id)
+            end
     end.
 
 
@@ -89,37 +86,27 @@ ensure_rep_db_exists() ->
     ignore.
 
 
--spec do_replication_loop(#rep{}) ->
-    {ok, {continuous, binary()}} | {ok, tuple()} | {error, any()}.
-do_replication_loop(#rep{id = {BaseId, Ext} = Id, options = Options} = Rep) ->
-    ok = couch_replicator_scheduler:add_job(Rep),
-    case get_value(continuous, Options, false) of
-    true ->
-        {ok, {continuous, ?l2b(BaseId ++ Ext)}};
-    false ->
-        wait_for_result(Id)
-    end.
-
-
--spec rep_result_listener(rep_id()) -> {ok, pid()}.
-rep_result_listener(RepId) ->
-    ReplyTo = self(),
-    {ok, _Listener} = couch_replicator_notifier:start_link(
-        fun({_, RepId2, _} = Ev) when RepId2 =:= RepId ->
-                ReplyTo ! Ev;
-            (_) ->
-                ok
-        end).
-
-
 -spec wait_for_result(rep_id()) ->
     {ok, {[_]}} | {error, any()}.
 wait_for_result(RepId) ->
-    receive
-    {finished, RepId, RepResult} ->
-        {ok, RepResult};
-    {error, RepId, Reason} ->
-        {error, Reason}
+    FinishRes = case couch_jobs:subscribe(?REP_JOBS, RepId) of
+        {ok, finished, JobData} ->
+            {ok, JobData};
+        {ok, SubId, _, _} ->
+            case couch_jobs:wait(SubId, finished, infinity) of
+                {?REP_JOBS, RepId, finished, JobData} -> {ok, JobData};
+                timeout -> timeout
+            end;
+        {error, Error} ->
+            {error, Error}
+    end,
+    case FinishRes of
+       {ok, #{<<"finished_result">> := CheckpointHistory}} ->
+            {ok, CheckpointHistory};
+       timeout ->
+            {error, timeout};
+       {error, Error} ->
+            {error, Error}
     end.
 
 
@@ -289,9 +276,9 @@ state_atom(State) when is_atom(State) ->
 -spec check_authorization(rep_id(), #user_ctx{}) -> ok | not_found.
 check_authorization(RepId, #user_ctx{name = Name} = Ctx) ->
     case couch_replicator_scheduler:rep_state(RepId) of
-    #rep{user_ctx = #user_ctx{name = Name}} ->
+    #{<<"user_ctx">> := #{<<"name">> := Name}} ->
         ok;
-    #rep{} ->
+    #{} ->
         couch_httpd:verify_is_server_admin(Ctx);
     nil ->
         not_found

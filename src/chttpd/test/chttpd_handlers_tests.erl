@@ -70,7 +70,8 @@ request_replicate(Url, Body) ->
     Headers = [{"Content-Type", "application/json"}],
     Handler = {chttpd_misc, handle_replicate_req},
     request(post, Url, Headers, Body, Handler, fun(Req) ->
-        chttpd:send_json(Req, 200, get(post_body))
+        PostBody = chttpd:json_body_obj(Req),
+        chttpd:send_json(Req, 200, PostBody)
     end).
 
 request(Method, Url, Headers, Body, {M, F}, MockFun) ->

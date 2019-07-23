@@ -30,7 +30,7 @@
     stats = couch_replicator_stats:new() :: orddict:orddict() | '_'
 }).
 
--type rep_id() :: {string(), string()}.
+-type rep_id() :: binary().
 -type db_doc_id() :: {binary(), binary() | '_'}.
 -type seconds() :: non_neg_integer().
 -type rep_start_result() ::

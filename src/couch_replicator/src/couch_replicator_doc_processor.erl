@@ -38,8 +38,7 @@
     doc/2,
     doc_lookup/3,
     update_docs/0,
-    get_worker_ref/1,
-    notify_cluster_event/2
+    get_worker_ref/1
 ]).
 
 -include_lib("couch/include/couch_db.hrl").
@@ -231,8 +230,6 @@ start_link() ->
 init([]) ->
     ?MODULE = ets:new(?MODULE, [named_table, {keypos, #rdoc.id},
         {read_concurrency, true}, {write_concurrency, true}]),
-    couch_replicator_clustering:link_cluster_event_listener(?MODULE,
-        notify_cluster_event, [self()]),
     {ok, nil}.
 
 
@@ -255,15 +252,6 @@ handle_call({completed, Id}, _From, State) ->
 handle_call({clean_up_replications, DbName}, _From, State) ->
     ok = removed_db(DbName),
     {reply, ok, State}.
-
-handle_cast({cluster, unstable}, State) ->
-    % Ignoring unstable state transition
-    {noreply, State};
-
-handle_cast({cluster, stable}, State) ->
-    % Membership changed recheck all the replication document ownership
-    nil = ets:foldl(fun cluster_membership_foldl/2, nil, ?MODULE),
-    {noreply, State};
 
 handle_cast(Msg, State) ->
     {stop, {error, unexpected_message, Msg}, State}.

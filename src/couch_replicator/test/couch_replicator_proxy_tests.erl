@@ -49,7 +49,7 @@ parse_rep_doc_without_proxy(_) ->
             {<<"source">>, <<"http://unproxied.com">>},
             {<<"target">>, <<"http://otherunproxied.com">>}
         ]},
-        Rep = couch_replicator_docs:parse_rep_doc(NoProxyDoc),
+        Rep = couch_replicator_docs:parse_rep_doc_without_id(NoProxyDoc),
         ?assertEqual((Rep#rep.source)#httpdb.proxy_url, undefined),
         ?assertEqual((Rep#rep.target)#httpdb.proxy_url, undefined)
     end).
@@ -63,7 +63,7 @@ parse_rep_doc_with_proxy(_) ->
             {<<"target">>, <<"http://otherunproxied.com">>},
             {<<"proxy">>, ProxyURL}
         ]},
-        Rep = couch_replicator_docs:parse_rep_doc(ProxyDoc),
+        Rep = couch_replicator_docs:parse_rep_doc_without_id(ProxyDoc),
         ?assertEqual((Rep#rep.source)#httpdb.proxy_url, binary_to_list(ProxyURL)),
         ?assertEqual((Rep#rep.target)#httpdb.proxy_url, binary_to_list(ProxyURL))
     end).

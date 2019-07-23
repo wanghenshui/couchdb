@@ -20,18 +20,6 @@ start_link() ->
 
 init(_Args) ->
     Children = [
-        {couch_replication_event,
-            {gen_event, start_link, [{local, couch_replication}]},
-            permanent,
-            brutal_kill,
-            worker,
-            dynamic},
-       {couch_replicator_clustering,
-            {couch_replicator_clustering, start_link, []},
-            permanent,
-            brutal_kill,
-            worker,
-            [couch_replicator_clustering]},
        {couch_replicator_connection,
             {couch_replicator_connection, start_link, []},
             permanent,

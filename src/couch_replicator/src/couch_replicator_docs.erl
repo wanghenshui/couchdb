@@ -27,7 +27,7 @@
     update_doc_completed/3,
     update_failed/3,
     update_rep_id/1,
-    update_triggered/2,
+    update_triggered/3,
     update_error/2
 ]).
 
@@ -56,6 +56,22 @@
 -define(OWNER, <<"owner">>).
 -define(CTX, {user_ctx, #user_ctx{roles=[<<"_admin">>, <<"_replicator">>]}}).
 -define(replace(L, K, V), lists:keystore(K, 1, L, {K, V})).
+
+-define(DEFAULT_SOCK_OPTS, "[{keepalive, true}, {nodelay, false}]").
+-define(VALID_SOCK_OPTS, [buffer, delay_send, exit_on_close, ipv6_v6only,
+    keepalive, nodelay, recbuf, send_timeout, send_timout_close, sndbuf,
+    priority, tos, tclass
+]).
+-define(CONFIG_DEFAULTS, [
+    {"worker_processes",    "4",                fun list_to_integer/1},
+    {"worker_batch_size",   "500",              fun list_to_integer/1},
+    {"http_connections",    "20",               fun list_to_integer/1},
+    {"connection_timeout",  "30000",            fun list_to_integer/1},
+    {"retries_per_request", "5",                fun list_to_integer/1},
+    {"use_checkpoints",     "true",             fun list_to_existing_atom/1},
+    {"checkpoint_interval", "30000",            fun list_to_integer/1},
+    {"socket_options",      ?DEFAULT_SOCK_OPTS, fun parse_sock_opts/1}
+]).
 
 
 remove_state_fields(DbName, DocId) ->
@@ -90,16 +106,12 @@ update_failed(DbName, DocId, Error) ->
         failed_state_updates]).
 
 
--spec update_triggered(#rep{}, rep_id()) -> ok.
-update_triggered(Rep, {Base, Ext}) ->
-    #rep{
-        db_name = DbName,
-        doc_id = DocId
-    } = Rep,
+-spec update_triggered(binary(), binary(), binary()) -> ok.
+update_triggered(Id, DocId, DbName) ->
     update_rep_doc(DbName, DocId, [
         {<<"_replication_state">>, <<"triggered">>},
         {<<"_replication_state_reason">>, undefined},
-        {<<"_replication_id">>, iolist_to_binary([Base, Ext])},
+        {<<"_replication_id">>, Id},
         {<<"_replication_stats">>, undefined}]),
     ok.
 
@@ -183,28 +195,7 @@ replication_design_doc_props(DDocId) ->
     ].
 
 
-% Note: parse_rep_doc can handle filtered replications. During parsing of the
-% replication doc it will make possibly remote http requests to the source
-% database. If failure or parsing of filter docs fails, parse_doc throws a
-% {filter_fetch_error, Error} excation. This exception should be considered
-% transient in respect to the contents of the document itself, since it depends
-% on netowrk availability of the source db and other factors.
--spec parse_rep_doc({[_]}) -> #rep{}.
-parse_rep_doc(RepDoc) ->
-    {ok, Rep} = try
-        parse_rep_doc(RepDoc, rep_user_ctx(RepDoc))
-    catch
-        throw:{error, Reason} ->
-            throw({bad_rep_doc, Reason});
-        throw:{filter_fetch_error, Reason} ->
-            throw({filter_fetch_error, Reason});
-        Tag:Err ->
-            throw({bad_rep_doc, to_binary({Tag, Err})})
-    end,
-    Rep.
-
-
--spec parse_rep_doc_without_id({[_]}) -> #rep{}.
+-spec parse_rep_doc_without_id({[_]}) -> #{}.
 parse_rep_doc_without_id(RepDoc) ->
     {ok, Rep} = try
         parse_rep_doc_without_id(RepDoc, rep_user_ctx(RepDoc))
@@ -217,11 +208,12 @@ parse_rep_doc_without_id(RepDoc) ->
     Rep.
 
 
--spec parse_rep_doc({[_]}, #user_ctx{}) -> {ok, #rep{}}.
+-spec parse_rep_doc({[_]}, #user_ctx{}) -> {ok, #{}}.
 parse_rep_doc(Doc, UserCtx) ->
     {ok, Rep} = parse_rep_doc_without_id(Doc, UserCtx),
-    Cancel = get_value(cancel, Rep#rep.options, false),
-    Id = get_value(id, Rep#rep.options, nil),
+    #{<<"options">> := Options} = Rep,
+    Cancel = maps:get(<<"cancel">>, Options, false),
+    Id = maps:get(<<"id">>, Options, nil),
     case {Cancel, Id} of
         {true, nil} ->
             % Cancel request with no id, must parse id out of body contents
@@ -235,14 +227,20 @@ parse_rep_doc(Doc, UserCtx) ->
     end.
 
 
--spec parse_rep_doc_without_id({[_]}, #user_ctx{}) -> {ok, #rep{}}.
-parse_rep_doc_without_id({Props}, UserCtx) ->
-    Proxy = get_value(<<"proxy">>, Props, <<>>),
-    Opts = make_options(Props),
-    case get_value(cancel, Opts, false) andalso
-        (get_value(id, Opts, nil) =/= nil) of
+-spec parse_rep_doc_without_id({[_]} | #{}, #user_ctx{}) -> {ok, #{}}.
+parse_rep_doc_without_id({[_]} = EJSon, UserCtx) ->
+    % Normalize all field names to be binaries and turn into a map
+    Map = ?JSON_DECODE(?JSON_ENCODE(EJSon)),
+    parse_rep_doc_without_id(Map, UserCtx);
+
+parse_rep_doc_without_id(#{} = Doc, UserCtx) ->
+    Proxy = maps:get(<<"proxy">>, Doc, <<>>),
+    Opts = make_options(Doc),
+    Cancel = maps:get(<<"cancel">>, Opts, false),
+    Id = maps:get(<<"id">>, Opts, nil),
+    case Cancel andalso Id =/= nill of
     true ->
-        {ok, #rep{options = Opts, user_ctx = UserCtx}};
+        {ok, #{<<"options">> => Opts, user_ctx = UserCtx}};
     false ->
         Source = parse_rep_db(get_value(<<"source">>, Props), Proxy, Opts),
         Target = parse_rep_db(get_value(<<"target">>, Props), Proxy, Opts),
@@ -272,33 +270,14 @@ parse_rep_doc_without_id({Props}, UserCtx) ->
     end.
 
 
-rep_to_map(null) ->
-    null;
-
-rep_to_map(#rep{} = Rep) ->
-    {IdBase, IdExt} = Rep#rep.id,
-    #{
-        <<"id_base">> => IdBase,
-        <<"id_ext">> => IdExt,
-        <<"source">> => Rep#rep.source,
-        <<"target">> => Rep#rep.target,
-        <<"options">> => Rep#rep.options,
-        <<"user_ctx">> => Rep#rep.user_ctx,
-        <<"type">> => Rep#rep.type,
-        <<"view">> => Rep#rep.view,
-        <<"doc_id">> => Rep#rep.doc_id,
-        <<"db_name">> => Rep#rep.db_name,
-        <<"start_time">> = Rep#rep.start_time,
-        <<"stats">> = Rep#rep.stats
-    }.
-
 % Update a #rep{} record with a replication_id. Calculating the id might involve
 % fetching a filter from the source db, and so it could fail intermetently.
 % In case of a failure to fetch the filter this function will throw a
 %  `{filter_fetch_error, Reason} exception.
-update_rep_id(Rep) ->
-    RepId = couch_replicator_ids:replication_id(Rep),
-    Rep#rep{id = RepId}.
+update_rep_id(#{} = Rep) ->
+    {BaseId, ExtId} = couch_replicator_ids:replication_id(Rep),
+    RepId = erlang:iolist_to_binary([BaseId, ExtId]),
+    Rep#{<<"id">> => RepId, <<"base_id">> = list_toBaseId}.
 
 
 update_rep_doc(RepDbName, RepDocId, KVs) ->
@@ -445,101 +424,84 @@ maybe_add_trailing_slash(Url) ->
     end.
 
 
--spec make_options([_]) -> [_].
-make_options(Props) ->
-    Options0 = lists:ukeysort(1, convert_options(Props)),
+-spec make_options(#{}) -> #{}.
+make_options(#{} = RepDoc) ->
+    Options0 = maps:fold(fun convert_options/3, #{}, RepDoc)
     Options = check_options(Options0),
-    DefWorkers = config:get("replicator", "worker_processes", "4"),
-    DefBatchSize = config:get("replicator", "worker_batch_size", "500"),
-    DefConns = config:get("replicator", "http_connections", "20"),
-    DefTimeout = config:get("replicator", "connection_timeout", "30000"),
-    DefRetries = config:get("replicator", "retries_per_request", "5"),
-    UseCheckpoints = config:get("replicator", "use_checkpoints", "true"),
-    DefCheckpointInterval = config:get("replicator", "checkpoint_interval",
-        "30000"),
-    {ok, DefSocketOptions} = couch_util:parse_term(
-        config:get("replicator", "socket_options",
-            "[{keepalive, true}, {nodelay, false}]")),
-    lists:ukeymerge(1, Options, lists:keysort(1, [
-        {connection_timeout, list_to_integer(DefTimeout)},
-        {retries, list_to_integer(DefRetries)},
-        {http_connections, list_to_integer(DefConns)},
-        {socket_options, DefSocketOptions},
-        {worker_batch_size, list_to_integer(DefBatchSize)},
-        {worker_processes, list_to_integer(DefWorkers)},
-        {use_checkpoints, list_to_existing_atom(UseCheckpoints)},
-        {checkpoint_interval, list_to_integer(DefCheckpointInterval)}
-    ])).
+    ConfigOptions = lists:foldl(fun({K, Default, ConversionFun}, Acc) ->
+        V = ConversionFun(config:get("replicator", K, Default)),
+        Acc#{list_to_binary(K) => V}
+    end, #{}, ?CONFIG_DEFAULTS),
+    maps:merge(ConfigOptions, Options).
 
 
--spec convert_options([_]) -> [_].
-convert_options([])->
-    [];
-convert_options([{<<"cancel">>, V} | _R]) when not is_boolean(V)->
+-spec convert_options(binary(), any(), #{}) -> #{}.
+convert_options(<<"cancel">>, V, _Acc) when not is_boolean(V)->
     throw({bad_request, <<"parameter `cancel` must be a boolean">>});
-convert_options([{<<"cancel">>, V} | R]) ->
-    [{cancel, V} | convert_options(R)];
-convert_options([{IdOpt, V} | R]) when IdOpt =:= <<"_local_id">>;
+convert_options(<<"cancel">>, V, Acc) ->
+    Acc#{<<"cancel">> => V};
+convert_options(IdOpt, V, Acc) when IdOpt =:= <<"_local_id">>;
         IdOpt =:= <<"replication_id">>; IdOpt =:= <<"id">> ->
-    [{id, couch_replicator_ids:convert(V)} | convert_options(R)];
-convert_options([{<<"create_target">>, V} | _R]) when not is_boolean(V)->
+    Acc#{<<"id">> => couch_replicator_ids:convert(V)};
+convert_options(<<"create_target">>, V, _Acc) when not is_boolean(V)->
     throw({bad_request, <<"parameter `create_target` must be a boolean">>});
-convert_options([{<<"create_target">>, V} | R]) ->
-    [{create_target, V} | convert_options(R)];
-convert_options([{<<"create_target_params">>, V} | _R]) when not is_tuple(V) ->
+convert_options(<<"create_target">>, V, Acc) ->
+    Acc#{<<"create_target">> => V};
+convert_options(<<"create_target_params">>, V, _Acc) when not is_tuple(V) ->
     throw({bad_request,
         <<"parameter `create_target_params` must be a JSON object">>});
-convert_options([{<<"create_target_params">>, V} | R]) ->
-    [{create_target_params, V} | convert_options(R)];
-convert_options([{<<"continuous">>, V} | _R]) when not is_boolean(V)->
+convert_options(<<"create_target_params">>, V, Acc) ->
+    Acc#{<<"create_target_params">> => V};
+convert_options(<<"continuous">>, V, Acc) when not is_boolean(V)->
     throw({bad_request, <<"parameter `continuous` must be a boolean">>});
-convert_options([{<<"continuous">>, V} | R]) ->
-    [{continuous, V} | convert_options(R)];
-convert_options([{<<"filter">>, V} | R]) ->
-    [{filter, V} | convert_options(R)];
-convert_options([{<<"query_params">>, V} | R]) ->
-    [{query_params, V} | convert_options(R)];
-convert_options([{<<"doc_ids">>, null} | R]) ->
-    convert_options(R);
-convert_options([{<<"doc_ids">>, V} | _R]) when not is_list(V) ->
+convert_options(<<"continuous">>, V, Acc) ->
+    Acc#{<<"continuous">> => V};
+convert_options(<<"filter">>, V, Acc) ->
+    Acc#{<<"filter">> => V};
+convert_options(<<"query_params">>, V, Acc) ->
+    Acc#{<<"query_params">> => V};
+convert_options(<<"doc_ids">>, null, Acc) ->
+    Acc;
+convert_options(<<"doc_ids">>, V, _Acc) when not is_list(V) ->
     throw({bad_request, <<"parameter `doc_ids` must be an array">>});
-convert_options([{<<"doc_ids">>, V} | R]) ->
+convert_options(<<"doc_ids">>, V, Acc) ->
     % Ensure same behaviour as old replicator: accept a list of percent
     % encoded doc IDs.
     DocIds = lists:usort([?l2b(couch_httpd:unquote(Id)) || Id <- V]),
-    [{doc_ids, DocIds} | convert_options(R)];
-convert_options([{<<"selector">>, V} | _R]) when not is_tuple(V) ->
+    Acc#{<<"doc_ids">> => DocIds};
+convert_options(<<"selector">>, V, _Acc) when not is_tuple(V) ->
     throw({bad_request, <<"parameter `selector` must be a JSON object">>});
-convert_options([{<<"selector">>, V} | R]) ->
-    [{selector, V} | convert_options(R)];
-convert_options([{<<"worker_processes">>, V} | R]) ->
-    [{worker_processes, couch_util:to_integer(V)} | convert_options(R)];
-convert_options([{<<"worker_batch_size">>, V} | R]) ->
-    [{worker_batch_size, couch_util:to_integer(V)} | convert_options(R)];
-convert_options([{<<"http_connections">>, V} | R]) ->
-    [{http_connections, couch_util:to_integer(V)} | convert_options(R)];
-convert_options([{<<"connection_timeout">>, V} | R]) ->
-    [{connection_timeout, couch_util:to_integer(V)} | convert_options(R)];
-convert_options([{<<"retries_per_request">>, V} | R]) ->
-    [{retries, couch_util:to_integer(V)} | convert_options(R)];
-convert_options([{<<"socket_options">>, V} | R]) ->
-    {ok, SocketOptions} = couch_util:parse_term(V),
-    [{socket_options, SocketOptions} | convert_options(R)];
-convert_options([{<<"since_seq">>, V} | R]) ->
-    [{since_seq, V} | convert_options(R)];
-convert_options([{<<"use_checkpoints">>, V} | R]) ->
-    [{use_checkpoints, V} | convert_options(R)];
-convert_options([{<<"checkpoint_interval">>, V} | R]) ->
-    [{checkpoint_interval, couch_util:to_integer(V)} | convert_options(R)];
-convert_options([_ | R]) -> % skip unknown option
-    convert_options(R).
+convert_options(<<"selector">>, V, Acc) ->
+    Acc#{<<"selector">> => V};
+convert_options(<<"worker_processes">>, V, Acc) ->
+    Acc#{<<"worker_processes">> => couch_util:to_integer(V)};
+convert_options(<<"worker_batch_size">>, V, Acc) ->
+    Acc#{<<"worker_batch_size">> => couch_util:to_integer(V)};
+convert_options(<<"http_connections">>, V, Acc) ->
+    Acc#{<<"http_connections">> => couch_util:to_integer(V)};
+convert_options(<<"connection_timeout">>, V, Acc) ->
+    Acc#{<<"connection_timeout">> => couch_util:to_integer(V)};
+convert_options(<<"retries_per_request">>, V, Acc) ->
+    Acc#{<<"retries">> => couch_util:to_integer(V)};
+convert_options(<<"socket_options">>, V, Acc) ->
+    Acc#{<<"socket_options">> => parse_sock_opts(V)};
+convert_options(<<"since_seq">>, V, Acc) ->
+    Acc#{<<"since_seq">> => V};
+convert_options(<<"use_checkpoints">>, V, Acc) when not is_boolean(V)->
+    throw({bad_request, <<"parameter `use_checkpoints` must be a boolean">>});
+convert_options(<<"use_checkpoints">>, V, Acc) ->
+    Acc#{<<"use_checkpoints">> => V};
+convert_options(<<"checkpoint_interval">>, V, Acc) ->
+    Acc#{<<"checkpoint_interval">>, couch_util:to_integer(V)};
+convert_options(_K, _V, Acc) -> % skip unknown option
+    Acc.
 
 
--spec check_options([_]) -> [_].
+-spec check_options(#{}) -> #{}.
 check_options(Options) ->
-    DocIds = lists:keyfind(doc_ids, 1, Options),
-    Filter = lists:keyfind(filter, 1, Options),
-    Selector = lists:keyfind(selector, 1, Options),
+    DocIds = maps:is_key(<<"doc_ids">>, Options),
+    Filter = maps:is_key(<<"filter">>, Options),
+    Selector = maps:is_key(<<"selector">>, Options),
     case {DocIds, Filter, Selector} of
         {false, false, false} -> Options;
         {false, false, _} -> Options;
@@ -549,6 +511,19 @@ check_options(Options) ->
             throw({bad_request,
                 "`doc_ids`,`filter`,`selector` are mutually exclusive"})
     end.
+
+
+parse_sock_opts(V) ->
+    {ok, SocketOptions} = couch_util:parse_term(V),
+    lists:foldl(fun
+        ({K, V}, Acc) when is_atom(K) ->
+            case lists:member(K, ?VALID_SOCKET_OPTIONS) of
+                true -> Acc#{atom_to_binary(K) => V};
+                false -> Acc
+            end;
+        (_, Acc) ->
+            Acc
+    end, #{}, SocketOptions).
 
 
 -spec parse_proxy_params(binary() | [_]) -> [_].

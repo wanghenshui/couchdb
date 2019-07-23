@@ -403,20 +403,6 @@ maybe_log(_HttpReq, #httpd_resp{should_log = false}) ->
     ok.
 
 
-%% HACK: replication currently handles two forms of input, #db{} style
-%% and #http_db style. We need a third that makes use of fabric. #db{}
-%% works fine for replicating the dbs and nodes database because they
-%% aren't sharded. So for now when a local db is specified as the source or
-%% the target, it's hacked to make it a full url and treated as a remote.
-possibly_hack(#httpd{path_parts=[<<"_replicate">>]}=Req) ->
-    {Props0} = chttpd:json_body_obj(Req),
-    Props1 = fix_uri(Req, Props0, <<"source">>),
-    Props2 = fix_uri(Req, Props1, <<"target">>),
-    put(post_body, {Props2}),
-    Req;
-possibly_hack(Req) ->
-    Req.
-
 check_request_uri_length(Uri) ->
     check_request_uri_length(Uri, config:get("httpd", "max_uri_length")).
 
@@ -439,53 +425,6 @@ check_url_encoding([$% | _]) ->
 check_url_encoding([_ | Rest]) ->
     check_url_encoding(Rest).
 
-fix_uri(Req, Props, Type) ->
-    case replication_uri(Type, Props) of
-    undefined ->
-        Props;
-    Uri0 ->
-        case is_http(Uri0) of
-        true ->
-            Props;
-        false ->
-            Uri = make_uri(Req, quote(Uri0)),
-            [{Type,Uri}|proplists:delete(Type,Props)]
-        end
-    end.
-
-replication_uri(Type, PostProps) ->
-    case couch_util:get_value(Type, PostProps) of
-    {Props} ->
-        couch_util:get_value(<<"url">>, Props);
-    Else ->
-        Else
-    end.
-
-is_http(<<"http://", _/binary>>) ->
-    true;
-is_http(<<"https://", _/binary>>) ->
-    true;
-is_http(_) ->
-    false.
-
-make_uri(Req, Raw) ->
-    Port = integer_to_list(mochiweb_socket_server:get(chttpd, port)),
-    Url = list_to_binary(["http://", config:get("httpd", "bind_address"),
-                          ":", Port, "/", Raw]),
-    Headers = [
-        {<<"authorization">>, ?l2b(header_value(Req,"authorization",""))},
-        {<<"cookie">>, ?l2b(extract_cookie(Req))}
-    ],
-    {[{<<"url">>,Url}, {<<"headers">>,{Headers}}]}.
-
-extract_cookie(#httpd{mochi_req = MochiReq}) ->
-    case MochiReq:get_cookie_value("AuthSession") of
-        undefined ->
-            "";
-        AuthSession ->
-            "AuthSession=" ++ AuthSession
-    end.
-%%% end hack
 
 set_auth_handlers() ->
     AuthenticationDefault =  "{chttpd_auth, cookie_authentication_handler},

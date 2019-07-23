@@ -63,9 +63,9 @@ parse(Options) ->
 % Fetches body of filter function from source database. Guaranteed to either
 % return {ok, Body} or an {error, Reason}. Also assume this function might
 % block due to network / socket issues for an undeterminted amount of time.
--spec fetch(binary(), binary(), binary(), #user_ctx{}) ->
+-spec fetch(binary(), binary(), binary(), #{}) ->
     {ok, {[_]}} | {error, binary()}.
-fetch(DDocName, FilterName, Source, UserCtx) ->
+fetch(DDocName, FilterName, Source, #{} = UserCtx) ->
     {Pid, Ref} = spawn_monitor(fun() ->
         try fetch_internal(DDocName, FilterName, Source, UserCtx) of
             Resp ->
@@ -108,9 +108,8 @@ view_type(Props, Options) ->
 
 % Private functions
 
-fetch_internal(DDocName, FilterName, Source, UserCtx) ->
-    Db = case (catch couch_replicator_api_wrap:db_open(Source,
-        [{user_ctx, UserCtx}])) of
+fetch_internal(DDocName, FilterName, Source, #{} = UserCtx) ->
+    Db = case (catch couch_replicator_api_wrap:db_open(Source, UserCtx) of
     {ok, Db0} ->
         Db0;
     DbError ->
