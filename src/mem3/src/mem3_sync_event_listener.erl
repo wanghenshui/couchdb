@@ -30,6 +30,7 @@
 
 -ifdef(TEST).
 -define(RELISTEN_DELAY, 500).
+-define(SLEEP, 500).
 -else.
 -define(RELISTEN_DELAY, 5000).
 -endif.
@@ -242,7 +243,7 @@ teardown(Pid) ->
 
 subscribe_for_config_test_() ->
     {
-        "Subscrive for configuration changes",
+        "Subscribe for configuration changes",
         {
             foreach,
             fun setup/0, fun teardown/1,
@@ -294,9 +295,13 @@ should_terminate(Pid) ->
     end).
 
 capture(Pid) ->
+    % The event listener only learns about config changes asynchronously,
+    % so without completely redesigning this test here's a little nap
+    ok = timer:sleep(?SLEEP),
+
     Ref = make_ref(),
+    Pid ! {get_state, Ref, self()},
     WaitFun = fun() ->
-        Pid ! {get_state, Ref, self()},
         receive
             {Ref, State} -> State
         after 0 ->
