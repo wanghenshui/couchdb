@@ -179,7 +179,7 @@ defmodule Couch do
       Keyword.get(
         options,
         :timeout,
-        Application.get_env(:httpotion, :default_timeout, 5000)
+        Application.get_env(:httpotion, :default_timeout, 60_000)
       )
 
     ib_options =
