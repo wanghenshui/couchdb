@@ -332,7 +332,9 @@ pipeline {
           steps {
             sh 'rm -f apache-couchdb-*.tar.gz'
             unstash 'tarball'
-            sh( script: build_script )
+            withEnv(['MIX_HOME='+pwd()]) {
+              sh( script: build_script )
+            }
           } // steps
           post {
             success {
