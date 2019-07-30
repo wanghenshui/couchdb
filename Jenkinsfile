@@ -42,6 +42,8 @@ rm -rf ${WORKSPACE}/pkgs/${platform}
 mkdir -p ${WORKSPACE}/pkgs/${platform}
 mv ../rpmbuild/RPMS/$(arch)/*rpm ${WORKSPACE}/pkgs/${platform} || true
 mv ../couchdb/*.deb ${WORKSPACE}/pkgs/${platform} || true
+mkdir -p ${WORKSPACE}/test-results/${platform}-${arch}
+mv ../couchdb/_build/*/lib/couchdbtest/*.xml ${WORKSPACE}/test-results/${platform}-${arch}/
 rm -rf ${builddir} ${COUCHDB_IO_LOG_DIR}
 '''
 
@@ -145,11 +147,18 @@ pipeline {
                 ./configure --with-curl
                 gmake check || (build-aux/logfile-uploader.py && false)
 
+                mkdir -p ${WORKSPACE}/test-results/freebsd
+                mv ../couchdb/_build/*/lib/couchdbtest/*.xml ${WORKSPACE}/test-results/freebsd/
                 # No package build for FreeBSD at this time
                 rm -rf $builddir $COUCHDB_IO_LOG_DIR
               '''
             } // withEnv
           } // steps
+          post {
+            always {
+              junit '${WORKSPACE}/test-results/freebsd/*.xml'
+            }
+          } // post
         } // stage FreeBSD
 
         stage('CentOS 6') {
@@ -173,6 +182,9 @@ pipeline {
             sh( script: build_script )
           } // steps
           post {
+            always {
+              junit '${WORKSPACE}/test-results/${platform}-${arch}/*.xml'
+            }
             success {
               archiveArtifacts artifacts: 'pkgs/**', fingerprint: true
             }
@@ -200,6 +212,9 @@ pipeline {
             sh( script: build_script )
           } // steps
           post {
+            always {
+              junit '${WORKSPACE}/test-results/${platform}-${arch}/*.xml'
+            }
             success {
               archiveArtifacts artifacts: 'pkgs/**', fingerprint: true
             }
@@ -227,6 +242,9 @@ pipeline {
             sh( script: build_script )
           } // steps
           post {
+            always {
+              junit '${WORKSPACE}/test-results/${platform}-${arch}/*.xml'
+            }
             success {
               archiveArtifacts artifacts: 'pkgs/**', fingerprint: true
             }
@@ -246,7 +264,7 @@ pipeline {
             timeout(time: 90, unit: "MINUTES")
           }
           environment {
-            platform = 'xenial'
+            platform = 'bionic'
           }
           steps {
             sh 'rm -f apache-couchdb-*.tar.gz'
@@ -254,6 +272,9 @@ pipeline {
             sh( script: build_script )
           } // steps
           post {
+            always {
+              junit '${WORKSPACE}/test-results/${platform}-${arch}/*.xml'
+            }
             success {
               archiveArtifacts artifacts: 'pkgs/**', fingerprint: true
             }
@@ -281,6 +302,9 @@ pipeline {
             sh( script: build_script )
           } // steps
           post {
+            always {
+              junit '${WORKSPACE}/test-results/${platform}-${arch}/*.xml'
+            }
             success {
               archiveArtifacts artifacts: 'pkgs/**', fingerprint: true
             }
@@ -300,7 +324,7 @@ pipeline {
             timeout(time: 90, unit: "MINUTES")
           }
           environment {
-            platform = 'jessie'
+            platform = 'stretch'
           }
           steps {
             sh 'rm -f apache-couchdb-*.tar.gz'
@@ -308,6 +332,9 @@ pipeline {
             sh( script: build_script )
           } // steps
           post {
+            always {
+              junit '${WORKSPACE}/test-results/${platform}-${arch}/*.xml'
+            }
             success {
               archiveArtifacts artifacts: 'pkgs/**', fingerprint: true
             }
@@ -327,7 +354,7 @@ pipeline {
             timeout(time: 90, unit: "MINUTES")
           }
           environment {
-            platform = 'jessie'
+            platform = 'stretch'
           }
           steps {
             sh 'rm -f apache-couchdb-*.tar.gz'
@@ -337,6 +364,9 @@ pipeline {
             }
           } // steps
           post {
+            always {
+              junit '${WORKSPACE}/test-results/${platform}-${arch}/*.xml'
+            }
             success {
               archiveArtifacts artifacts: 'pkgs/**', fingerprint: true
             }
