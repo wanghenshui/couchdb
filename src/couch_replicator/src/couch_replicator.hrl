@@ -31,6 +31,7 @@
 }).
 
 -type rep_id() :: binary().
+-type user_name() :: binary() | null.
 -type db_doc_id() :: {binary(), binary() | '_'}.
 -type seconds() :: non_neg_integer().
 -type rep_start_result() ::

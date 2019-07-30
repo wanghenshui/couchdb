@@ -75,16 +75,7 @@
 
 during_doc_update(#doc{} = Doc, Db, _UpdateType) ->
     couch_stats:increment_counter([couch_replicator, docs, db_changes]),
-    try
-        process_change(Db, Doc)
-    catch
-        _Tag:Error ->
-            DocId = Doc#doc.id,
-            #{name := DbName} = Db,
-            couch_replicator_docs:update_failed(DbName, DocId, Error)
-    end,
-    ok.
-
+    ok = process_change(Db, Doc).
 
 after_db_create(#{name := DbName}) ->
     couch_stats:increment_counter([couch_replicator, docs, dbs_created]),
@@ -93,11 +84,7 @@ after_db_create(#{name := DbName}) ->
 
 after_db_delete(#{name := DbName}) ->
     couch_stats:increment_counter([couch_replicator, docs, dbs_deleted]),
-    gen_server:call(?MODULE, {clean_up_replications, DbName}, infinity).
-
-
-docs_job_id(DbName, Id) when is_binary(DbName), is_binary(Id) ->
-    <<DbName/binary, Id/binary>>.
+    remove_replications_by_dbname(DbName).
 
 
 process_change(_Db, #doc{id = <<?DESIGN_DOC_PREFIX, _/binary>>}) ->
@@ -105,86 +92,84 @@ process_change(_Db, #doc{id = <<?DESIGN_DOC_PREFIX, _/binary>>}) ->
 
 process_change(#{name := DbName} = Db, #doc{deleted = true} = Doc) ->
     Id = docs_job_id(DbName, Doc#doc.id),
-    case couch_jobs:get_job_data(Db, ?REP_DOCS, Id) of
-        {error, not_found} ->
-            ok;
-        {ok, #{<<"rid">> := null}} ->
-            couch_jobs:remove(Db, ?REP_DOCS, Id),
-            ok;
-        {ok, #{<<"rid">> := RepId}} ->
-            couch_jobs:remove(Db, ?REP_JOBS, RepId),
-            couch_jobs:remove(Db, ?REP_DOCS, Id),
-            ok
-    end.
-
+    ok = remove_replication_by_doc_job_id(Db, Id);
 
 process_change(#{name := DbName} = Db, #doc{} = Doc) ->
     #doc{id = DocId, body = {Props} = Body} = Doc,
-    Id = docs_job_id(DbName, DocId),
-    DocState = get_json_value(<<"_replication_state">>, Props),
-    {Rep, RepParseError} = try
+    {Rep, RepError} = try
         Rep0 = couch_replicator_docs:parse_rep_doc_without_id(Body),
-        Rep1 = Rep0#{db_name = DbName, start_time = erlang:system_time()},
+        Rep1 = Rep0#{
+            <<"db_name">> => DbName,
+            <<"start_time">> => erlang:system_time()
+        },
         {Rep1, null}
     catch
         throw:{bad_rep_doc, Reason} ->
-            {null, Reason}
+            {null, couch_replicator_utils:rep_error_to_binary(Reason)}
     end,
-    RepMap = couch_replicator_docs:rep_to_map(Rep),
-    case couch_jobs:get_job_data(Db, ?REP_DOCS, Id) of
+    % We keep track of the doc's state in order to clear it if update_docs
+    % is toggled from true to false
+    DocState = get_json_value(<<"_replication_state">>, Props, null),
+    case couch_jobs:get_job_data(Db, ?REP_DOCS, docs_job_id(DbName, DocId)) of
         {error, not_found} ->
-            RepDocsJob = #{
-                <<"rep_id">> := null,
-                <<"db_name">> := DbName,
-                <<"doc_id">> := Doc#doc.id,
-                <<"rep">> := RepMap,
-                <<"rep_parse_error">> := RepParseError
-            },
-            couch_jobs:add(Db, ?REP_DOCS, RepDocsJob);
-        {ok, #{} = Old} ->
-            % Normalize old rep and new rep and only update job
-            % if changed
-            #{<<"rep">> := OldRep, <<"rep_parse_error">> := OldError} = Old,
-            NOldRep = couch_replicator_util:normalize_rep(OldRep),
-            NRep = couch_replicator_util:normalize_rep(Rep),
-            RepDocsJob = #{
-                <<"rep_id">> := null,
-                <<"db_name">> := DbName,
-                <<"doc_id">> := Doc#doc.id,
-                <<"rep">> := RepMap,
-                <<"rep_parse_error">> := RepParseError
-            }
+            update_replication_job(Db, DbName, DocId, Rep, RepError, DocState);
+        {ok, #{<<"rep">> := null, <<"rep_parse_error">> := RepError}}
+                when Rep =:= null ->
+            % Same error as before occurred, don't bother updating the job
+            ok;
+        {ok, #{<<"rep">> := null}} when Rep =:= null ->
+            % Error occured but it's a different error. Update the job so user
+            % sees the new error
+            update_replication_job(Db, DbName, DocId, Rep, RepError, DocState);
+        {ok, #{<<"rep">> := OldRep, <<"rep_parse_error">> := OldError}} ->
+            NormOldRep = couch_replicator_util:normalize_rep(OldRep),
+            NormRep = couch_replicator_util:normalize_rep(Rep),
+            case NormOldRep == NormRep of
+                true ->
+                    % Document was changed but none of the parameters relevent
+                    % for the replication job have changed, so make it a no-op
+                    ok;
+                false ->
+                    update_replication_job(Db, DbName, DocId, Rep, RepError,
+                        DocState)
+            end
     end.
 
 
-process_change(#{name := DbName} = Db, #doc{} = Doc) ->
-    #doc{id = DocId, body = {Props} = Body, deleted = Deleted} = Doc,
-    Id = {DbName, DocId},
-    case Deleted of
-        true ->
-            process_deleted_doc(Db, Id);
-        false ->
-            process_updated_doc(Db, Id, Body)
-    end.
-    State = get_json_value(<<"_replication_state">>, Props),
-    case {Deleted, State} of
-        {true, _} ->
-            ok = gen_server:call(?MODULE, {removed, Id}, infinity);
-        {false, undefined} ->
-            ok = process_updated(Id, Body);
-        {false, <<"triggered">>} ->
-            maybe_remove_state_fields(DbName, DocId),
-            ok = process_updated(Id, Body);
-        {false, <<"completed">>} ->
-            ok = gen_server:call(?MODULE, {completed, Id}, infinity);
-        {false, <<"error">>} ->
-            % Handle replications started from older versions of replicator
-            % which wrote transient errors to replication docs
-            maybe_remove_state_fields(DbName, DocId),
-            ok = process_updated(Id, Body);
-        {false, <<"failed">>} ->
-            ok
-    end.
+rep_docs_job_execute(#{} = Job, #{<<"rep">> := null} = JobData) ->
+    #{
+        <<"rep_parse_error">> := Error,
+        <<"db_name">> := DbName,
+        <<"doc_id">> := DocId,
+    } = JobData,
+    JobData1 = JobData#{
+        <<"finished_state">> := <<"failed">>,
+        <<"finished_result">> := Error
+    }
+    case couch_jobs:finish(undefined, Job, JobData1) of
+        ok ->
+            couch_replicator_docs:update_failed(DbName, DocId, Error),
+            ok;
+        {error, JobError} ->
+            Msg = "Replication ~s job could not finish. JobError:~p",
+            couch_log:error(Msg, [RepId, JobError]),
+            {error, JobError}
+    end;
+
+rep_docs_job_execute(#{} = Job, #{} = JobData) ->
+    #{<<"rep">> := Rep, <<"doc_state">> := DocState} = JobData,
+    case lists:member(DocState, [<<"triggered">>, <<"error">>]) of
+        true -> maybe_remove_state_fields(DbName, DocId),
+        false -> ok
+    end,
+    % completed jobs should finish right away
+
+    % otherwise start computing the replication id
+
+    Rep1 = update_replication_id(Rep),
+
+    % when done add or update the replicaton job
+    % if jobs has a filter keep checking if filter changes
 
 
 maybe_remove_state_fields(DbName, DocId) ->
@@ -607,19 +592,55 @@ ejson_doc_state_filter(State, States) when is_list(States), is_atom(State) ->
     lists:member(State, States).
 
 
--spec cluster_membership_foldl(#rdoc{}, nil) -> nil.
-cluster_membership_foldl(#rdoc{id = {DbName, DocId} = Id, rid = RepId}, nil) ->
-    case couch_replicator_clustering:owner(DbName, DocId) of
-        unstable ->
-            nil;
-        ThisNode when ThisNode =:= node() ->
-            nil;
-        OtherNode ->
-            Msg = "Replication doc ~p:~p with id ~p usurped by node ~p",
-            couch_log:notice(Msg, [DbName, DocId, RepId, OtherNode]),
-            removed_doc(Id),
-            nil
+-spec update_replication(any(), binary(), binary(), #{} | null,
+    binary() | null, binary() | null) -> ok.
+update_replication_job(Tx, DbName, DocId, Rep, RepParseError, DocState) ->
+    JobId = docs_job_id(DbName, DocId),
+    ok = remove_replication_by_doc_job_id(Db, JobId),
+    RepDocsJob = #{
+        <<"rep_id">> := null,
+        <<"db_name">> := DbName,
+        <<"doc_id">> := DocId,
+        <<"rep">> := Rep,
+        <<"rep_parse_error">> := RepParseError,
+        <<"doc_state">> := DocState
+    },
+    ok = couch_jobs:add(Tx, ?REP_DOCS, RepDocsJob).
+
+
+docs_job_id(DbName, Id) when is_binary(DbName), is_binary(Id) ->
+    <<DbName/binary, "|", Id/binary>>.
+
+
+-spec remove_replication_by_doc_job_id(Tx, Id) -> ok.
+remove_replication_by_doc_job_id(Tx, Id) ->
+    case couch_jobs:get_job_data(Tx, ?REP_DOCS, Id) of
+        {error, not_found} ->
+            ok;
+        {ok, #{<<"rep_id">> := null}} ->
+            couch_jobs:remove(Tx, ?REP_DOCS, Id),
+            ok;
+        {ok, #{<<"rep_id">> := RepId}} ->
+            couch_jobs:remove(Tx, ?REP_JOBS, RepId),
+            couch_jobs:remove(Tx, ?REP_DOCS, Id),
+            ok
     end.
+
+
+-spec remove_replications_by_dbname(DbName) -> ok.
+remove_replications_by_dbname(DbName) ->
+    DbNameSize = byte_size(DbName),
+    Filter = fun
+        (<<DbName:DbNameSize/binary, "|", _, _/binary>>) -> true;
+        (_) -> false
+    end,
+    JobsMap = couch_job:get_jobs(undefined, ?REP_DOCS, Filter),
+    % Batch these into smaller transactions eventually...
+    couch_jobs_fdb:tx(couch_jobs_fdb:get_jtx(Tx), fun(JTx) ->
+        maps:map(fun(Id, _) ->
+            remove_replication_by_doc_job_id(JTx, Id)
+        end, JobsMap)
+    end).
 
 
 -ifdef(TEST).
@@ -650,8 +671,7 @@ doc_processor_test_() ->
             t_failed_change(),
             t_change_for_different_node(),
             t_change_when_cluster_unstable(),
-            t_ejson_docs(),
-            t_cluster_membership_foldl()
+            t_ejson_docs()
         ]
     }.
 
@@ -801,21 +821,6 @@ t_ejson_docs() ->
         ],
         ?assertEqual(ExpectedProps, lists:usort(DocProps2))
     end).
-
-
-% Check that when cluster membership changes records from doc processor and job
-% scheduler get removed
-t_cluster_membership_foldl() ->
-   ?_test(begin
-        mock_existing_jobs_lookup([test_rep(?R1)]),
-        ?assertEqual(ok, process_change(?DB, change())),
-        meck:expect(couch_replicator_clustering, owner, 2, different_node),
-        ?assert(ets:member(?MODULE, {?DB, ?DOC1})),
-        gen_server:cast(?MODULE, {cluster, stable}),
-        meck:wait(2, couch_replicator_scheduler, find_jobs_by_doc, 2, 5000),
-        ?assertNot(ets:member(?MODULE, {?DB, ?DOC1})),
-        ?assert(removed_job(?R1))
-   end).
 
 
 get_worker_ref_test_() ->

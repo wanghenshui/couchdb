@@ -19,6 +19,8 @@
     remove/3,
     get_job_data/3,
     get_job_state/3,
+    get_jobs/2,
+    get_jobs/3,
 
     % Job processing
     accept/1,
@@ -101,6 +103,21 @@ get_job_state(Tx, Type, JobId) when is_binary(JobId) ->
                 {error, Error}
         end
     end).
+
+
+-spec get_jobs(jtx(), job_type()) -> #{}.
+get_jobs(Tx, Type) when is_binary(JobId) ->
+    couch_jobs_fdb:tx(couch_jobs_fdb:get_jtx(Tx), fun(JTx) ->
+        couch_job_fdb:get_jobs(JTx, Type)
+    end).
+
+
+-spec get_jobs(jtx(), job_type()) -> #{}.
+get_jobs(Tx, Type, Filter) when is_binary(JobId), is_function(Filter, 1) ->
+    couch_jobs_fdb:tx(couch_jobs_fdb:get_jtx(Tx), fun(JTx) ->
+        couch_job_fdb:get_jobs(JTx, Type, Filter)
+    end).
+
 
 
 %% Job processor API

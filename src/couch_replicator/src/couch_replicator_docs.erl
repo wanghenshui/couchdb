@@ -18,7 +18,6 @@
     parse_rep_db/3,
     parse_rep_doc_without_id/1,
     parse_rep_doc_without_id/2,
-    rep_to_map/1,
     before_doc_update/3,
     after_doc_read/2,
     ensure_rep_db_exists/0,
@@ -62,6 +61,7 @@
     keepalive, nodelay, recbuf, send_timeout, send_timout_close, sndbuf,
     priority, tos, tclass
 ]).
+
 -define(CONFIG_DEFAULTS, [
     {"worker_processes",    "4",                fun list_to_integer/1},
     {"worker_batch_size",   "500",              fun list_to_integer/1},
@@ -116,14 +116,17 @@ update_triggered(Id, DocId, DbName) ->
     ok.
 
 
--spec update_error(#rep{}, any()) -> ok.
-update_error(#rep{db_name = DbName, doc_id = DocId, id = RepId}, Error) ->
+-spec update_error(#{}, any()) -> ok.
+update_error(#rep{} = Rep, Error) ->
+    #{
+        <<"id">> := RepId0,
+        <<"db_name">> := DbName,
+        <<"doc_id">> := DocId,
+    } = Rep,
     Reason = error_reason(Error),
-    BinRepId = case RepId of
-        {Base, Ext} ->
-            iolist_to_binary([Base, Ext]);
-        _Other ->
-            null
+    RepId = case RepId0 of
+        Id when is_binary(Id) -> Id;
+        _Other -> null
     end,
     update_rep_doc(DbName, DocId, [
         {<<"_replication_state">>, <<"error">>},
@@ -198,7 +201,7 @@ replication_design_doc_props(DDocId) ->
 -spec parse_rep_doc_without_id({[_]}) -> #{}.
 parse_rep_doc_without_id(RepDoc) ->
     {ok, Rep} = try
-        parse_rep_doc_without_id(RepDoc, rep_user_ctx(RepDoc))
+        parse_rep_doc_without_id(RepDoc, rep_user_name(RepDoc))
     catch
         throw:{error, Reason} ->
             throw({bad_rep_doc, Reason});
@@ -208,9 +211,9 @@ parse_rep_doc_without_id(RepDoc) ->
     Rep.
 
 
--spec parse_rep_doc({[_]}, #user_ctx{}) -> {ok, #{}}.
-parse_rep_doc(Doc, UserCtx) ->
-    {ok, Rep} = parse_rep_doc_without_id(Doc, UserCtx),
+-spec parse_rep_doc({[_]}, user_name()) -> {ok, #{}}.
+parse_rep_doc({[_]} = Doc, UserName) ->
+    {ok, Rep} = parse_rep_doc_without_id(Doc, UserName),
     #{<<"options">> := Options} = Rep,
     Cancel = maps:get(<<"cancel">>, Options, false),
     Id = maps:get(<<"id">>, Options, nil),
@@ -227,44 +230,43 @@ parse_rep_doc(Doc, UserCtx) ->
     end.
 
 
--spec parse_rep_doc_without_id({[_]} | #{}, #user_ctx{}) -> {ok, #{}}.
-parse_rep_doc_without_id({[_]} = EJSon, UserCtx) ->
+-spec parse_rep_doc_without_id({[_]} | #{}, user_name()) -> {ok, #{}}.
+parse_rep_doc_without_id({[_]} = EJson, UserName) ->
     % Normalize all field names to be binaries and turn into a map
-    Map = ?JSON_DECODE(?JSON_ENCODE(EJSon)),
-    parse_rep_doc_without_id(Map, UserCtx);
+    Map = ?JSON_DECODE(?JSON_ENCODE(EJson)),
+    parse_rep_doc_without_id(Map, UserName);
 
-parse_rep_doc_without_id(#{} = Doc, UserCtx) ->
-    Proxy = maps:get(<<"proxy">>, Doc, <<>>),
+parse_rep_doc_without_id(#{} = Doc, UserName) ->
+    Proxy = parse_proxy_params(maps:get(<<"proxy">>, Doc, <<>>)),
     Opts = make_options(Doc),
     Cancel = maps:get(<<"cancel">>, Opts, false),
     Id = maps:get(<<"id">>, Opts, nil),
-    case Cancel andalso Id =/= nill of
+    case Cancel andalso Id =/= nil of
     true ->
-        {ok, #{<<"options">> => Opts, user_ctx = UserCtx}};
+        {ok, #{<<"options">> => Opts, <<"user">> => UserName}};
     false ->
-        Source = parse_rep_db(get_value(<<"source">>, Props), Proxy, Opts),
-        Target = parse_rep_db(get_value(<<"target">>, Props), Proxy, Opts),
+        #{<<"source">> := Source0, <<"target">> := Target0} = Doc,
+        Source = parse_rep_db(Source0, Proxy, Opts),
+        Target = parse_rep_db(Target0, Proxy, Opts),
         {Type, View} = case couch_replicator_filters:view_type(Props, Opts) of
-        {error, Error} ->
-            throw({bad_request, Error});
-        Result ->
-            Result
+            {error, Error} -> throw({bad_request, Error});
+            Result -> Result
         end,
-        Rep = #rep{
-            source = Source,
-            target = Target,
-            options = Opts,
-            user_ctx = UserCtx,
-            type = Type,
-            view = View,
-            doc_id = get_value(<<"_id">>, Props, null)
+        Rep = #{
+            <<"id">> => null,
+            <<"base_id">> => null,
+            <<"source">> => Source,
+            <<"target">> => Target,
+            <<"options">> => Opts,
+            <<"user">> => UserName,
+            <<"type">> => Type,
+            <<"view">> => View,
+            <<"doc_id">> => maps:get(<<"_id">>, Doc, null)
         },
         % Check if can parse filter code, if not throw exception
         case couch_replicator_filters:parse(Opts) of
-        {error, FilterError} ->
-            throw({error, FilterError});
-        {ok, _Filter} ->
-             ok
+            {error, FilterError} -> throw({error, FilterError});
+            {ok, _Filter} -> ok
         end,
         {ok, Rep}
     end.
@@ -277,7 +279,7 @@ parse_rep_doc_without_id(#{} = Doc, UserCtx) ->
 update_rep_id(#{} = Rep) ->
     {BaseId, ExtId} = couch_replicator_ids:replication_id(Rep),
     RepId = erlang:iolist_to_binary([BaseId, ExtId]),
-    Rep#{<<"id">> => RepId, <<"base_id">> = list_toBaseId}.
+    Rep#{<<"id">> => RepId, <<"base_id">> = BaseId}.
 
 
 update_rep_doc(RepDbName, RepDocId, KVs) ->
@@ -356,71 +358,73 @@ save_rep_doc(DbName, Doc) ->
     end.
 
 
--spec rep_user_ctx({[_]}) -> #user_ctx{}.
-rep_user_ctx({RepDoc}) ->
+-spec rep_user_name({[_]}) -> binary() | null.
+rep_user_name({RepDoc}) ->
     case get_json_value(<<"user_ctx">>, RepDoc) of
-    undefined ->
-        #user_ctx{};
-    {UserCtx} ->
-        #user_ctx{
-            name = get_json_value(<<"name">>, UserCtx, null),
-            roles = get_json_value(<<"roles">>, UserCtx, [])
-        }
+        undefined -> null;
+        {UserCtx} -> get_json_value(<<"name">>, UserCtx, null)
     end.
 
 
--spec parse_rep_db({[_]} | binary(), binary(), [_]) -> #httpd{} | binary().
-parse_rep_db({Props}, Proxy, Options) ->
-    ProxyParams = parse_proxy_params(Proxy),
+-spec parse_rep_db(#{}, #{}, #{}) -> #{}.
+parse_rep_db(#{} = Endpoint, #{} = ProxyParams, #{} = Options) ->
     ProxyURL = case ProxyParams of
-        [] -> undefined;
-        _ -> binary_to_list(Proxy)
+       #{<<"proxy_url">> := PUrl} -> PUrl;
+       _ -> null
     end,
-    Url = maybe_add_trailing_slash(get_value(<<"url">>, Props)),
-    {AuthProps} = get_value(<<"auth">>, Props, {[]}),
-    {BinHeaders} = get_value(<<"headers">>, Props, {[]}),
-    Headers = lists:ukeysort(1, [{?b2l(K), ?b2l(V)} || {K, V} <- BinHeaders]),
-    DefaultHeaders = (#httpdb{})#httpdb.headers,
-    #httpdb{
-        url = Url,
-        auth_props = AuthProps,
-        headers = lists:ukeymerge(1, Headers, DefaultHeaders),
-        ibrowse_options = lists:keysort(1,
-            [{socket_options, get_value(socket_options, Options)} |
-                ProxyParams ++ ssl_params(Url)]),
-        timeout = get_value(connection_timeout, Options),
-        http_connections = get_value(http_connections, Options),
-        retries = get_value(retries, Options),
-        proxy_url = ProxyURL
-    };
+
+    Url0 = maps:get(<<"url">>, Endpoint),
+    Url = maybe_add_trailing_slash(Url0),
+
+    AuthProps = maps:get(<<"auth">>, Endpoint, #{}),
+
+    Headers0 = maps:get(<<"headers">>, Endpoint, #{}),
+    DefaultHeaders = couch_replicator_utils:get_default_headers(),
+    % For same keys values in second map override those in the first
+    Headers = maps:merge(DefaultHeaders, Headers0),
+
+    SockOpts = maps:get(<<"socket_options">>, Options, #{}),
+    SockAndProxy = maps:merge(SockOpts, ProxyParams),
+
+    SslParams = ssl_params(Url),
+
+    #{
+        <<"url">> => Url,
+        <<"auth_props">> => AuthProps,
+        <<"headers">> => Headers,
+        <<"ibrowse_options">> => maps:merge(SslParams, SockAndProxy),
+        <<"timeout">> => maps:get(<<"timeout">>, Options),
+        <<"http_connections">> => maps:get(<<"http_connections">>, Options),
+        <<"retries">> => maps:get(<<"retries">>, Options)
+        <<"proxy_url">> => ProxyUrl
+    }.
+
 
 parse_rep_db(<<"http://", _/binary>> = Url, Proxy, Options) ->
-    parse_rep_db({[{<<"url">>, Url}]}, Proxy, Options);
+    parse_rep_db(#{<<"url">> => Url}, Proxy, Options);
 
 parse_rep_db(<<"https://", _/binary>> = Url, Proxy, Options) ->
-    parse_rep_db({[{<<"url">>, Url}]}, Proxy, Options);
+    parse_rep_db(#{<<"url">> => Url}, Proxy, Options);
 
-parse_rep_db(<<DbName/binary>>, _Proxy, _Options) ->
-    DbName;
+parse_rep_db(<<DbName/binary>> = LocalDb, _Proxyh, _Options) ->
+    throw({error, <<"Local endpoint not supported: ", DbName/binary>>});
 
 parse_rep_db(undefined, _Proxy, _Options) ->
     throw({error, <<"Missing replicator database">>}).
 
 
--spec maybe_add_trailing_slash(binary() | list()) -> list().
+-spec maybe_add_trailing_slash(binary()) -> binary().
+maybe_add_trailing_slash(<<>>) ->
+    <<>>;
+
 maybe_add_trailing_slash(Url) when is_binary(Url) ->
-    maybe_add_trailing_slash(?b2l(Url));
-maybe_add_trailing_slash(Url) ->
-    case lists:member($?, Url) of
-        true ->
-            Url;  % skip if there are query params
-        false ->
-            case lists:last(Url) of
-                $/ ->
-                    Url;
-                _ ->
-                    Url ++ "/"
-            end
+    case binary:match(Url, <<"?">>) of
+        nomatch ->
+            case binary:last(Url) of
+                $/  -> Url;
+                _ -> <<Url/binary, "/">>;
+        _ ->
+            Url  % skip if there are query params
     end.
 
 
@@ -526,66 +530,100 @@ parse_sock_opts(V) ->
     end, #{}, SocketOptions).
 
 
--spec parse_proxy_params(binary() | [_]) -> [_].
-parse_proxy_params(ProxyUrl) when is_binary(ProxyUrl) ->
-    parse_proxy_params(?b2l(ProxyUrl));
-parse_proxy_params([]) ->
-    [];
-parse_proxy_params(ProxyUrl) ->
+-spec parse_proxy_params(binary() | #{}) -> #{}.
+parse_proxy_params(<<>>) ->
+    #{};
+parse_proxy_params(ProxyUrl0) when is_binary(ProxyUrl0)->
+    ProxyUrl = binary_to_list(ProxyUrl0),
     #url{
         host = Host,
         port = Port,
         username = User,
         password = Passwd,
-        protocol = Protocol
+        protocol = Protocol0
     } = ibrowse_lib:parse_url(ProxyUrl),
-    [
-        {proxy_protocol, Protocol},
-        {proxy_host, Host},
-        {proxy_port, Port}
-    ] ++ case is_list(User) andalso is_list(Passwd) of
-        false ->
-            [];
+    Protocol = atom_to_binary(Protocol, utf8),
+    case lists:member(Protocol, [<<"http">>, <<"https">>, <<"socks5">>]) of
         true ->
-            [{proxy_user, User}, {proxy_password, Passwd}]
-        end.
+            atom_to_binary(Protocol, utf8);
+        false ->
+            Error = <<"Unsupported proxy protocol", Protocol/binary>>,
+            throw({bad_request, Error})
+    end,
+    ProxyParams = #{
+        <<"proxy_url">> => ProxyUrl,
+        <<"proxy_protocol">> => Protocol,
+        <<"proxy_host">> => list_to_binary(Host),
+        <<"proxy_port">> => Port
+    #},
+    case is_list(User) andalso is_list(Passwd) of
+        true ->
+            ProxyParams#{
+                <<"proxy_user">> => list_to_binary(User),
+                <<"proxy_password">> => list_to_binary(Passwd)
+            };
+        false ->
+            ProxyParams
+    end.
 
 
--spec ssl_params([_]) -> [_].
+-spec ssl_params(binary()) -> #{}.
 ssl_params(Url) ->
-    case ibrowse_lib:parse_url(Url) of
+    case ibrowse_lib:parse_url(binary_to_list(Url)) of
     #url{protocol = https} ->
         Depth = list_to_integer(
             config:get("replicator", "ssl_certificate_max_depth", "3")
         ),
         VerifyCerts = config:get("replicator", "verify_ssl_certificates"),
-        CertFile = config:get("replicator", "cert_file", undefined),
-        KeyFile = config:get("replicator", "key_file", undefined),
-        Password = config:get("replicator", "password", undefined),
-        SslOpts = [{depth, Depth} | ssl_verify_options(VerifyCerts =:= "true")],
-        SslOpts1 = case CertFile /= undefined andalso KeyFile /= undefined of
+        CertFile = config:get("replicator", "cert_file", null),
+        KeyFile = config:get("replicator", "key_file", null),
+        Password = config:get("replicator", "password", null),
+        VerifySslOptions = ssl_verify_options(VerifyCerts =:= "true"),
+        SslOpts = maps:merge(VerifySslOptions, #{<<"depth">> => Depth}),
+        SslOpts1 = case CertFile /= null andalso KeyFile /= null of
             true ->
-                case Password of
-                    undefined ->
-                        [{certfile, CertFile}, {keyfile, KeyFile}] ++ SslOpts;
+                CertFileOpts = case Password of
+                    null ->
+                        #{
+                            <<"certfile">> => list_to_binary(CertFile),
+                            <<"keyfile">> => list_to_binary(KeyFile)
+                        };
                     _ ->
-                        [{certfile, CertFile}, {keyfile, KeyFile},
-                            {password, Password}] ++ SslOpts
-                end;
-            false -> SslOpts
+                        #{
+                            <<"certfile">> => list_to_binary(CertFile),
+                            <<"keyfile">> => list_to_binary(KeyFile),
+                            <<"password">> => list_to_binary(Password)
+                        }
+                end,
+                maps:merge(SslOpts, CertFileOpts)
+            false ->
+                SslOpts
         end,
-        [{is_ssl, true}, {ssl_options, SslOpts1}];
+        #{<<"is_ssl">> => true, <<"ssl_options">> => SslOpts1};
     #url{protocol = http} ->
-        []
+        #{}
     end.
 
 
 -spec ssl_verify_options(true | false) -> [_].
 ssl_verify_options(true) ->
-    CAFile = config:get("replicator", "ssl_trusted_certificates_file"),
-    [{verify, verify_peer}, {cacertfile, CAFile}];
+    case config:get("replicator", "ssl_trusted_certificates_file", undefined) of
+        undefined ->
+            #{
+                <<"verify">> => <<"verify_peer">>,
+                <<"cacertfile">> => null
+            };
+        CAFile when is_list(CAFile) ->
+            #{
+                <<"verify">> => <<"verify_peer">>,
+                <<"cacertfile">> => list_to_binary(CAFile)
+            }
+    end;
+
 ssl_verify_options(false) ->
-    [{verify, verify_none}].
+    #{
+        <<"verify">> => <<"verify_none">>
+    }.
 
 
 -spec before_doc_update(#doc{}, Db::any(), couch_db:update_type()) -> #doc{}.

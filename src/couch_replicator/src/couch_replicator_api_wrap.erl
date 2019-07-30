@@ -23,8 +23,8 @@
 -include("couch_replicator_api_wrap.hrl").
 
 -export([
-    db_open/2,
-    db_open/4,
+    db_open/1,
+    db_open/3,
     db_close/1,
     get_db_info/1,
     get_pending_count/2,
@@ -64,11 +64,11 @@ db_uri(#httpdb{url = Url}) ->
     couch_util:url_strip_password(Url).
 
 
-db_open(Db, #{} = UserCtxMap) when is_map(Db) orelse is_binary(Db) ->
-    db_open(Db, #{} = UserCtxMap, false, []);
+db_open(#{} = Db) ->
+    db_open(Db, false, []);
 
 
-db_open(#{} = Db0, #httpdb{} = Db1, #{} =_UserCtxMap, Create, CreateParams) ->
+db_open(#{} = Db0, Create, CreateParams) ->
     {ok, Db} = couch_replicator_httpc:setup(db_from_json(Db0)),
     try
         case Create of
@@ -910,6 +910,14 @@ db_from_json(#{} = DbMap) ->
         [{binary_to_list(K), binary_to_list(V)} | Acc]
     end, [], Headers0),
     IBrowseOptions0 = maps:fold(fun
+        (<<"proxy_protocol">>, V, Acc) ->
+            [{binary_to_atom(K), binary_to_existing_atom(V)} | Acc];
+        (<<"socket_options">>, #{} = SockOpts, Acc) ->
+            SockOptsKVs = maps:fold(fun sock_opts_fold/3, [], SockOpts),
+            [{socket_options, SockOptsKVs} | Acc];
+        (<<"ssl_options">>, #{} = SslOpts, Acc) ->
+            SslOptsKVs = maps:fold(fun ssl_opts_fold/3, [], SslOpts),
+            [{ssl_options, SslOptsKVs} | Acc];
         (K, V, Acc) when is_binary(V) ->
             [{binary_to_atom(K), binary_to_list(V)} | Acc];
         (K, V, Acc) ->
@@ -929,3 +937,30 @@ db_from_json(#{} = DbMap) ->
         retries = Retries,
         proxy_url = ProxyURL
     }.
+
+
+
+% See couch_replicator_docs:ssl_params/1 for ssl parsed options
+% and http://erlang.org/doc/man/ssl.html#type-server_option
+% all latest SSL server options
+%
+ssl_opts_fold(K, V, Acc) when is_boolean(V); is_integer(V) ->
+    [{binary_to_atom(K), V} | Acc];
+
+ssl_opts_fold(K, null, Acc) ->
+    [{binary_to_atom(K), undefined} | Acc];
+
+ssl_opts_fold(<<"verify">>, V, Acc) ->
+    [{binary_to_atom(K), binary_to_atom(V)};
+
+ssl_opts_fold(K, V, Acc) when is_list(V) ->
+    [{binary_to_atom(K), binary_to_list(V)} | Acc].
+
+
+% See ?VALID_SOCK_OPTS in couch_replicator_docs for accepted socket options
+%
+sock_opts_fold(K, V, Acc) when is_list(V) ->
+     [{binary_to_atom(K), binary_to_atom(V)} | Acc];
+
+sock_opts_fold(K, V, Acc) when is_boolean(V); is_integer(V) ->
+    [{binary_to_atom(K), V} | Acc].

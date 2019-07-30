@@ -112,17 +112,18 @@ wait_for_result(RepId) ->
 
 -spec cancel_replication(rep_id()) ->
     {ok, {cancelled, binary()}} | {error, not_found}.
-cancel_replication({BasedId, Extension} = RepId) ->
-    FullRepId = BasedId ++ Extension,
-    couch_log:notice("Canceling replication '~s' ...", [FullRepId]),
-    case couch_replicator_scheduler:rep_state(RepId) of
-    #rep{} ->
-        ok = couch_replicator_scheduler:remove_job(RepId),
-        couch_log:notice("Replication '~s' cancelled", [FullRepId]),
-        {ok, {cancelled, ?l2b(FullRepId)}};
-    nil ->
-        couch_log:notice("Replication '~s' not found", [FullRepId]),
-        {error, not_found}
+cancel_replication(RepId) when is_binary(RepId) ->
+    couch_log:notice("Canceling replication '~s' ...", [RepId]),
+    case couch_jobs:get_job_data(undefined, ?REP_JOBS, RepId) of
+        {error_not, found} ->
+            {error, not_found};
+        #{<<"rep">> := #{<<"db_name">> := null}} ->
+            couch_jobs:remove(undefined, ?REP_JOBS, RepId)
+            {ok, {cancelled, ?l2b(FullRepId)}};
+        #{<<"rep">> := #{}} ->
+            % Job was started from a replicator doc canceling via _replicate
+            % doesn't quite make sense, instead replicator should be deleted.
+            {error, not_found}
     end.
 
 
@@ -131,10 +132,10 @@ replication_states() ->
     ?REPLICATION_STATES.
 
 
--spec strip_url_creds(binary() | {[_]}) -> binary().
+-spec strip_url_creds(binary() | #{}) -> binary().
 strip_url_creds(Endpoint) ->
-    case couch_replicator_docs:parse_rep_db(Endpoint, [], []) of
-        #httpdb{url=Url} ->
+    case couch_replicator_docs:parse_rep_db(Endpoint, #{}, #{}) of
+        #{<<"url">> := Url} ->
             iolist_to_binary(couch_util:url_strip_password(Url));
         LocalDb when is_binary(LocalDb) ->
             LocalDb
@@ -275,13 +276,13 @@ state_atom(State) when is_atom(State) ->
 
 -spec check_authorization(rep_id(), #user_ctx{}) -> ok | not_found.
 check_authorization(RepId, #user_ctx{name = Name} = Ctx) ->
-    case couch_replicator_scheduler:rep_state(RepId) of
-    #{<<"user_ctx">> := #{<<"name">> := Name}} ->
-        ok;
-    #{} ->
-        couch_httpd:verify_is_server_admin(Ctx);
-    nil ->
-        not_found
+    case couch_jobs:get_job_data(undefined, ?REP_JOBS, RePid) of
+        {error_not, found} ->
+            not_found;
+        #{<<"rep">> := {<<"user">> := Name}} ->
+            ok;
+        #{} ->
+            couch_httpd:verify_is_server_admin(Ctx)
     end.
 
 
@@ -330,13 +331,6 @@ t_replication_not_found() ->
         ?assertEqual(not_found, check_authorization(<<"RepId">>, UserCtx2))
     end).
 
-
-expect_rep_user_ctx(Name, Role) ->
-    meck:expect(couch_replicator_scheduler, rep_state,
-        fun(_Id) ->
-            UserCtx = #user_ctx{name = Name, roles = [Role]},
-            #rep{user_ctx = UserCtx}
-        end).
 
 
 strip_url_creds_test_() ->

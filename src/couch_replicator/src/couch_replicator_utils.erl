@@ -14,11 +14,6 @@
 
 -export([
    parse_rep_doc/2,
-   open_db/1,
-   close_db/1,
-   local_db_name/1,
-   start_db_compaction_notifier/2,
-   stop_db_compaction_notifier/1,
    replication_id/2,
    sum_stats/2,
    is_deleted/1,
@@ -29,8 +24,7 @@
    filter_state/3,
    remove_basic_auth_from_headers/1,
    normalize_rep/1,
-   user_ctx_from_json/1,
-   user_ctx_to_json/1
+   default_headers_map/0
 ]).
 
 -export([
@@ -46,49 +40,6 @@
     get_value/3
 ]).
 
-
-open_db(#httpdb{} = HttpDb) ->
-    HttpDb;
-open_db(Db) ->
-    DbName = couch_db:name(Db),
-    UserCtx = couch_db:get_user_ctx(Db),
-    {ok, NewDb} = couch_db:open(DbName, [{user_ctx, UserCtx}]),
-    NewDb.
-
-
-close_db(#httpdb{}) ->
-    ok;
-close_db(Db) ->
-    couch_db:close(Db).
-
-
-local_db_name(#httpdb{}) ->
-    undefined;
-local_db_name(Db) ->
-    couch_db:name(Db).
-
-
-start_db_compaction_notifier(#httpdb{}, _) ->
-    nil;
-start_db_compaction_notifier(Db, Server) ->
-    DbName = couch_db:name(Db),
-    {ok, Pid} = couch_event:link_listener(
-            ?MODULE, handle_db_event, Server, [{dbname, DbName}]
-        ),
-    Pid.
-
-
-stop_db_compaction_notifier(nil) ->
-    ok;
-stop_db_compaction_notifier(Listener) ->
-    couch_event:stop_listener(Listener).
-
-
-handle_db_event(DbName, compacted, Server) ->
-    gen_server:cast(Server, {db_compacted, DbName}),
-    {ok, Server};
-handle_db_event(_DbName, _Event, Server) ->
-    {ok, Server}.
 
 
 rep_error_to_binary(Error) ->
@@ -228,30 +179,16 @@ normalize_endpoint(<<DbName/binary>>) ->
     DbName;
 
 normalize_endpoint(#{} = Endpoint) ->
-    Ks = [<<"url">>,<<"auth_props">>, <<"headers">>, <<"timeout">>,
+    Ks = [<<"url">>, <<"auth_props">>, <<"headers">>, <<"timeout">>,
         <<"ibrowse_options">>, <<"retries">>, <<"http_connections">>
     ],
     maps:with(Ks, Endpoint).
 
 
-user_ctx_to_json(#user_ctx{name = Name, roles = Roles0} = UserCtx) ->
-    {AtomRoles0, Roles} = lists:partition(fun erlang:is_atom/1, Roles0),
-    AtomRoles = lists:map(fun(R) -> atom_to_binary(V, utf8) end, AtomRoles0),
-    UserCtxMap = #{
-        <<"name">> => Name,
-        <<"roles">> => Roles,
-        <<"atom_roles">> => AtomRoles
-    }.
-
-
-user_ctx_from_json(#{} = UserCtxMap) ->
-    #{
-        <<"name">> := Name,
-        <<"roles">> := Roles
-        <<"atom_roles">> := AtomRoles0
-    },
-    AtomRoles = lists:map(fun(R) -> binary_to_atom(V, utf8) end, AtomRoles0),
-    #user_ctx{name = Name, roles = lists:sort(Roles ++ AtomRoles)}.
+get_default_headers() ->
+    lists:foldl(fun({K, V}, Acc) ->
+        Acc#{list_to_binary(K) => list_to_binary(V)}
+    end, #{}, (#httpdb{})#httpdb.headers).
 
 
 -ifdef(TEST).
