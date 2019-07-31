@@ -43,8 +43,8 @@ mkdir -p ${WORKSPACE}/pkgs/${platform}
 mv ../rpmbuild/RPMS/$(arch)/*rpm ${WORKSPACE}/pkgs/${platform} || true
 mv ../couchdb/*.deb ${WORKSPACE}/pkgs/${platform} || true
 mkdir -p ${WORKSPACE}/test-results/${platform}-${arch}
-mv ../couchdb/_build/*/lib/couchdbtest/*.xml ${WORKSPACE}/test-results/${platform}-${arch}/
 mv ../couchdb/src/*/.eunit/*.xml ${WORKSPACE}/test-results/${platform}-${arch}/
+mv ../couchdb/_build/*/lib/couchdbtest/*.xml ${WORKSPACE}/test-results/${platform}-${arch}/
 rm -rf ${builddir} ${COUCHDB_IO_LOG_DIR}
 '''
 
@@ -149,7 +149,8 @@ pipeline {
                 gmake check || (build-aux/logfile-uploader.py && false)
 
                 mkdir -p ${WORKSPACE}/test-results/freebsd
-                mv ../couchdb/_build/*/lib/couchdbtest/*.xml ${WORKSPACE}/test-results/freebsd/
+                mv src/*/.eunit/*.xml ${WORKSPACE}/test-results/${platform}-${arch}/
+                mv _build/*/lib/couchdbtest/*.xml ${WORKSPACE}/test-results/freebsd/
                 # No package build for FreeBSD at this time
                 rm -rf $builddir $COUCHDB_IO_LOG_DIR
               '''
