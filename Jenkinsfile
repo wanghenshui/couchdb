@@ -68,7 +68,7 @@ pipeline {
   options {
     buildDiscarder(logRotator(numToKeepStr: '10', artifactNumToKeepStr: '10'))
     // This fails the build immediately if any parallel step fails
-    parallelsAlwaysFailFast()
+    // parallelsAlwaysFailFast()
     preserveStashes(buildCount: 10)
     timeout(time: 3, unit: 'HOURS')
     timestamps()
