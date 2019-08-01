@@ -159,8 +159,6 @@ pipeline {
             cleanup {
               sh 'rm -rf ${builddir} ${COUCHDB_IO_LOG_DIR}'
             }
-        }
-
           } // post
         } // stage FreeBSD
 
