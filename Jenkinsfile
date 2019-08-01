@@ -24,7 +24,7 @@ builddir=$(mktemp -d)
 tar -xf ${WORKSPACE}/apache-couchdb-*.tar.gz
 cd apache-couchdb-*
 ./configure --with-curl
-make eunit || (build-aux/logfile-uploader.py && false)
+make eunit apps=mem3 suites=mem3_reshard_api_test || (build-aux/logfile-uploader.py && false)
 find . -name "*.xml"
 
 echo
@@ -143,7 +143,7 @@ pipeline {
                 tar -xf $WORKSPACE/apache-couchdb-*.tar.gz
                 cd apache-couchdb-*
                 ./configure --with-curl
-                gmake eunit || (build-aux/logfile-uploader.py && false)
+                gmake eunit apps=mem3 suites=mem3_reshard_api_test || (build-aux/logfile-uploader.py && false)
 
                 find . -name "*.xml"
 
