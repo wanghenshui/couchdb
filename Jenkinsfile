@@ -24,7 +24,7 @@ cd ${builddir}
 tar -xf ${WORKSPACE}/apache-couchdb-*.tar.gz
 cd apache-couchdb-*
 ./configure --with-curl
-make check || (build-aux/logfile-uploader.py && false)
+make elixir || (build-aux/logfile-uploader.py && false)
 
 echo
 echo "Build CouchDB packages"
@@ -42,11 +42,7 @@ rm -rf ${WORKSPACE}/pkgs/${platform}
 mkdir -p ${WORKSPACE}/pkgs/${platform}
 mv ../rpmbuild/RPMS/$(arch)/*rpm ${WORKSPACE}/pkgs/${platform} || true
 mv ../couchdb/*.deb ${WORKSPACE}/pkgs/${platform} || true
-mkdir -p ${WORKSPACE}/test-results/${platform}-${arch}
 find ../couchdb -name "*.xml"
-mv ../couchdb/src/*/.eunit/*.xml ${WORKSPACE}/test-results/${platform}-${arch}/ || true
-mv ../couchdb/_build/*/lib/couchdbtest/*.xml ${WORKSPACE}/test-results/${platform}-${arch}/ || true
-rm -rf ${builddir} ${COUCHDB_IO_LOG_DIR}
 '''
 
 pipeline {
@@ -147,21 +143,24 @@ pipeline {
                 tar -xf $WORKSPACE/apache-couchdb-*.tar.gz
                 cd apache-couchdb-*
                 ./configure --with-curl
-                gmake check || (build-aux/logfile-uploader.py && false)
+                gmake elixir || (build-aux/logfile-uploader.py && false)
 
-                mkdir -p ${WORKSPACE}/test-results/freebsd
                 find . -name "*.xml"
-                mv src/*/.eunit/*.xml ${WORKSPACE}/test-results/${platform}-${arch}/ || true
-                mv _build/*/lib/couchdbtest/*.xml ${WORKSPACE}/test-results/freebsd/ || true
+
                 # No package build for FreeBSD at this time
-                rm -rf $builddir $COUCHDB_IO_LOG_DIR
               '''
             } // withEnv
           } // steps
           post {
             always {
-              junit '${WORKSPACE}/test-results/freebsd/*.xml'
+              junit '${builddir}/apache-couchdb-*/src/*/.eunit/*.xml'
+              junit '${builddir}/apache-couchdb-*/_build/*/lib/couchdbtest/*.xml'
             }
+            cleanup {
+              sh 'rm -rf ${builddir} ${COUCHDB_IO_LOG_DIR}'
+            }
+        }
+
           } // post
         } // stage FreeBSD
 
@@ -187,10 +186,14 @@ pipeline {
           } // steps
           post {
             always {
-              junit '${WORKSPACE}/test-results/${platform}-${arch}/*.xml'
+              junit '${builddir}/couchdb/src/*/.eunit/*.xml'
+              junit '${builddir}/couchdb/_build/*/lib/couchdbtest/*.xml'
             }
             success {
               archiveArtifacts artifacts: 'pkgs/**', fingerprint: true
+            }
+            cleanup {
+              sh 'rm -rf ${builddir} ${COUCHDB_IO_LOG_DIR}'
             }
           } // post
         } // stage
@@ -217,10 +220,14 @@ pipeline {
           } // steps
           post {
             always {
-              junit '${WORKSPACE}/test-results/${platform}-${arch}/*.xml'
+              junit '${builddir}/couchdb/src/*/.eunit/*.xml'
+              junit '${builddir}/couchdb/_build/*/lib/couchdbtest/*.xml'
             }
             success {
               archiveArtifacts artifacts: 'pkgs/**', fingerprint: true
+            }
+            cleanup {
+              sh 'rm -rf ${builddir} ${COUCHDB_IO_LOG_DIR}'
             }
           } // post
         } // stage
@@ -247,10 +254,14 @@ pipeline {
           } // steps
           post {
             always {
-              junit '${WORKSPACE}/test-results/${platform}-${arch}/*.xml'
+              junit '${builddir}/couchdb/src/*/.eunit/*.xml'
+              junit '${builddir}/couchdb/_build/*/lib/couchdbtest/*.xml'
             }
             success {
               archiveArtifacts artifacts: 'pkgs/**', fingerprint: true
+            }
+            cleanup {
+              sh 'rm -rf ${builddir} ${COUCHDB_IO_LOG_DIR}'
             }
           } // post
         } // stage
@@ -277,10 +288,14 @@ pipeline {
           } // steps
           post {
             always {
-              junit '${WORKSPACE}/test-results/${platform}-${arch}/*.xml'
+              junit '${builddir}/couchdb/src/*/.eunit/*.xml'
+              junit '${builddir}/couchdb/_build/*/lib/couchdbtest/*.xml'
             }
             success {
               archiveArtifacts artifacts: 'pkgs/**', fingerprint: true
+            }
+            cleanup {
+              sh 'rm -rf ${builddir} ${COUCHDB_IO_LOG_DIR}'
             }
           } // post
         } // stage
@@ -307,10 +322,14 @@ pipeline {
           } // steps
           post {
             always {
-              junit '${WORKSPACE}/test-results/${platform}-${arch}/*.xml'
+              junit '${builddir}/couchdb/src/*/.eunit/*.xml'
+              junit '${builddir}/couchdb/_build/*/lib/couchdbtest/*.xml'
             }
             success {
               archiveArtifacts artifacts: 'pkgs/**', fingerprint: true
+            }
+            cleanup {
+              sh 'rm -rf ${builddir} ${COUCHDB_IO_LOG_DIR}'
             }
           } // post
         } // stage
@@ -337,10 +356,14 @@ pipeline {
           } // steps
           post {
             always {
-              junit '${WORKSPACE}/test-results/${platform}-${arch}/*.xml'
+              junit '${builddir}/couchdb/src/*/.eunit/*.xml'
+              junit '${builddir}/couchdb/_build/*/lib/couchdbtest/*.xml'
             }
             success {
               archiveArtifacts artifacts: 'pkgs/**', fingerprint: true
+            }
+            cleanup {
+              sh 'rm -rf ${builddir} ${COUCHDB_IO_LOG_DIR}'
             }
           } // post
         } // stage
@@ -369,10 +392,14 @@ pipeline {
           } // steps
           post {
             always {
-              junit '${WORKSPACE}/test-results/${platform}-${arch}/*.xml'
+              junit '${builddir}/couchdb/src/*/.eunit/*.xml'
+              junit '${builddir}/couchdb/_build/*/lib/couchdbtest/*.xml'
             }
             success {
               archiveArtifacts artifacts: 'pkgs/**', fingerprint: true
+            }
+            cleanup {
+              sh 'rm -rf ${builddir} ${COUCHDB_IO_LOG_DIR}'
             }
           } // post
         } // stage
