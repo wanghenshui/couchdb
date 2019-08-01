@@ -24,7 +24,7 @@ cd ${builddir}
 tar -xf ${WORKSPACE}/apache-couchdb-*.tar.gz
 cd apache-couchdb-*
 ./configure --with-curl
-make elixir || (build-aux/logfile-uploader.py && false)
+make eunit || (build-aux/logfile-uploader.py && false)
 
 echo
 echo "Build CouchDB packages"
@@ -143,7 +143,7 @@ pipeline {
                 tar -xf $WORKSPACE/apache-couchdb-*.tar.gz
                 cd apache-couchdb-*
                 ./configure --with-curl
-                gmake elixir || (build-aux/logfile-uploader.py && false)
+                gmake eunit || (build-aux/logfile-uploader.py && false)
 
                 find . -name "*.xml"
 
