@@ -25,7 +25,7 @@ tar -xf ${WORKSPACE}/apache-couchdb-*.tar.gz
 cd apache-couchdb-*
 ./configure --with-curl
 make eunit || (build-aux/logfile-uploader.py && false)
-find ../couchdb -name "*.xml"
+find . -name "*.xml"
 
 echo
 echo "Build CouchDB packages"
