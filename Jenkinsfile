@@ -25,6 +25,7 @@ tar -xf ${WORKSPACE}/apache-couchdb-*.tar.gz
 cd apache-couchdb-*
 ./configure --with-curl
 make eunit || (build-aux/logfile-uploader.py && false)
+find ../couchdb -name "*.xml"
 
 echo
 echo "Build CouchDB packages"
@@ -42,7 +43,6 @@ rm -rf ${WORKSPACE}/pkgs/${platform}
 mkdir -p ${WORKSPACE}/pkgs/${platform}
 mv ../rpmbuild/RPMS/$(arch)/*rpm ${WORKSPACE}/pkgs/${platform} || true
 mv ../couchdb/*.deb ${WORKSPACE}/pkgs/${platform} || true
-find ../couchdb -name "*.xml"
 '''
 
 pipeline {
@@ -184,8 +184,8 @@ pipeline {
           } // steps
           post {
             always {
-              junit '${builddir}/couchdb/src/*/.eunit/*.xml'
-              junit '${builddir}/couchdb/_build/*/lib/couchdbtest/*.xml'
+              junit '${builddir}/apache-couchdb-*/src/*/.eunit/*.xml'
+              junit '${builddir}/apache-couchdb-*/_build/*/lib/couchdbtest/*.xml'
             }
             success {
               archiveArtifacts artifacts: 'pkgs/**', fingerprint: true
@@ -218,8 +218,8 @@ pipeline {
           } // steps
           post {
             always {
-              junit '${builddir}/couchdb/src/*/.eunit/*.xml'
-              junit '${builddir}/couchdb/_build/*/lib/couchdbtest/*.xml'
+              junit '${builddir}/apache-couchdb-*/src/*/.eunit/*.xml'
+              junit '${builddir}/apache-couchdb-*/_build/*/lib/couchdbtest/*.xml'
             }
             success {
               archiveArtifacts artifacts: 'pkgs/**', fingerprint: true
@@ -252,8 +252,8 @@ pipeline {
           } // steps
           post {
             always {
-              junit '${builddir}/couchdb/src/*/.eunit/*.xml'
-              junit '${builddir}/couchdb/_build/*/lib/couchdbtest/*.xml'
+              junit '${builddir}/apache-couchdb-*/src/*/.eunit/*.xml'
+              junit '${builddir}/apache-couchdb-*/_build/*/lib/couchdbtest/*.xml'
             }
             success {
               archiveArtifacts artifacts: 'pkgs/**', fingerprint: true
@@ -286,8 +286,8 @@ pipeline {
           } // steps
           post {
             always {
-              junit '${builddir}/couchdb/src/*/.eunit/*.xml'
-              junit '${builddir}/couchdb/_build/*/lib/couchdbtest/*.xml'
+              junit '${builddir}/apache-couchdb-*/src/*/.eunit/*.xml'
+              junit '${builddir}/apache-couchdb-*/_build/*/lib/couchdbtest/*.xml'
             }
             success {
               archiveArtifacts artifacts: 'pkgs/**', fingerprint: true
@@ -320,8 +320,8 @@ pipeline {
           } // steps
           post {
             always {
-              junit '${builddir}/couchdb/src/*/.eunit/*.xml'
-              junit '${builddir}/couchdb/_build/*/lib/couchdbtest/*.xml'
+              junit '${builddir}/apache-couchdb-*/src/*/.eunit/*.xml'
+              junit '${builddir}/apache-couchdb-*/_build/*/lib/couchdbtest/*.xml'
             }
             success {
               archiveArtifacts artifacts: 'pkgs/**', fingerprint: true
@@ -354,8 +354,8 @@ pipeline {
           } // steps
           post {
             always {
-              junit '${builddir}/couchdb/src/*/.eunit/*.xml'
-              junit '${builddir}/couchdb/_build/*/lib/couchdbtest/*.xml'
+              junit '${builddir}/apache-couchdb-*/src/*/.eunit/*.xml'
+              junit '${builddir}/apache-couchdb-*/_build/*/lib/couchdbtest/*.xml'
             }
             success {
               archiveArtifacts artifacts: 'pkgs/**', fingerprint: true
@@ -390,8 +390,8 @@ pipeline {
           } // steps
           post {
             always {
-              junit '${builddir}/couchdb/src/*/.eunit/*.xml'
-              junit '${builddir}/couchdb/_build/*/lib/couchdbtest/*.xml'
+              junit '${builddir}/apache-couchdb-*/src/*/.eunit/*.xml'
+              junit '${builddir}/apache-couchdb-*/_build/*/lib/couchdbtest/*.xml'
             }
             success {
               archiveArtifacts artifacts: 'pkgs/**', fingerprint: true
